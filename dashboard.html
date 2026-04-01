@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Stock Mirror Fish v4</title>
+<title>Stock Mirror Fish v4 · Live</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 /* ─── Reset & Base ─────────────────────────────── */
@@ -219,21 +219,119 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
 .spin{display:inline-block;width:14px;height:14px;border:2px solid var(--border2);border-top-color:var(--blue);border-radius:50%;animation:spin .7s linear infinite;margin-right:7px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .hidden{display:none!important}
+
+/* ─── Live price flash animations ─────────── */
+@keyframes flashUp{0%{background:rgba(0,230,118,.35)}100%{background:transparent}}
+@keyframes flashDn{0%{background:rgba(255,68,102,.35)}100%{background:transparent}}
+.flash-up{animation:flashUp .8s ease-out}
+.flash-dn{animation:flashDn .8s ease-out}
+
+/* ─── Market status pill ───────────────────── */
+#market-pill{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:3px 9px;border-radius:12px;font-size:9px;font-weight:700;
+  border:1px solid;white-space:nowrap;
+}
+#market-pill.open{color:var(--green);border-color:var(--green);background:rgba(0,230,118,.08)}
+#market-pill.pre{color:var(--yellow);border-color:var(--yellow);background:rgba(255,170,0,.08)}
+#market-pill.closed{color:var(--text3);border-color:var(--border2);background:transparent}
+#market-dot{width:5px;height:5px;border-radius:50%;background:currentColor}
+#market-pill.open #market-dot{animation:pulse 1.5s infinite}
+
+/* ─── Search autocomplete dropdown ────────── */
+#search-wrap{position:relative;display:inline-flex;align-items:center}
+#search-dropdown{
+  position:absolute;top:calc(100% + 4px);left:0;
+  background:var(--bg3);border:1px solid var(--border2);
+  border-radius:8px;width:280px;z-index:999;
+  box-shadow:0 8px 24px rgba(0,0,0,.5);overflow:hidden;
+  max-height:320px;overflow-y:auto;
+}
+.sd-item{
+  display:flex;align-items:center;gap:10px;
+  padding:8px 11px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.04);
+  transition:background .1s;
+}
+.sd-item:last-child{border-bottom:none}
+.sd-item:hover{background:var(--bg4)}
+.sd-sym{font-weight:700;font-size:11px;color:var(--cyan);width:52px;flex-shrink:0}
+.sd-name{font-size:10px;color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sd-price{font-size:10px;font-weight:700;text-align:right;flex-shrink:0}
+.sd-exch{font-size:8px;color:var(--text3)}
+.sd-empty{padding:12px;text-align:center;color:var(--text3);font-size:10px}
+.sd-loading{padding:10px;text-align:center;color:var(--text3);font-size:10px}
+
+/* ─── Screener panel ───────────────────────── */
+#screener-panel{
+  position:fixed;top:0;right:-100%;width:100%;height:100%;
+  background:var(--bg);z-index:100;transition:right .3s cubic-bezier(.4,0,.2,1);
+  display:flex;flex-direction:column;
+}
+#screener-panel.open{right:0}
+#screener-hdr{
+  display:flex;align-items:center;gap:10px;padding:10px 16px;
+  background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0;
+}
+#screener-title{font-size:15px;font-weight:700;color:var(--cyan)}
+#screener-close{
+  margin-left:auto;background:none;border:1px solid var(--border2);
+  border-radius:5px;color:var(--text2);padding:4px 10px;cursor:pointer;
+  font-size:11px;font-family:var(--font);
+}
+#screener-close:hover{border-color:var(--red);color:var(--red)}
+#screener-filters{
+  display:flex;gap:8px;padding:8px 16px;background:var(--bg2);
+  border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center;flex-shrink:0;
+}
+.sf-select{
+  background:var(--bg3);border:1px solid var(--border2);border-radius:5px;
+  color:var(--text);padding:4px 8px;font-family:var(--font);font-size:10px;outline:none;
+}
+.sf-select:focus{border-color:var(--cyan)}
+#screener-body{flex:1;overflow-y:auto;padding:10px 16px}
+#screener-table{width:100%;border-collapse:collapse;font-size:11px}
+#screener-table th{
+  background:var(--bg3);color:var(--text3);padding:6px 10px;
+  text-align:right;font-weight:600;border-bottom:1px solid var(--border);
+  white-space:nowrap;cursor:pointer;user-select:none;
+}
+#screener-table th:first-child{text-align:left}
+#screener-table th:hover{color:var(--cyan)}
+#screener-table td{
+  padding:7px 10px;border-bottom:1px solid rgba(255,255,255,.03);
+  text-align:right;white-space:nowrap;
+}
+#screener-table td:first-child{text-align:left}
+#screener-table tr:hover td{background:rgba(255,255,255,.03);cursor:pointer}
+#screener-count{font-size:9px;color:var(--text3);margin-left:auto}
+
+/* ─── Live indicator on chips ──────────────── */
+.chip-live-dot{
+  width:5px;height:5px;border-radius:50%;background:var(--green);
+  flex-shrink:0;animation:pulse 2s infinite;
+}
 </style>
 </head>
 <body>
 
 <!-- ═══ HEADER ═══════════════════════════════════════════ -->
 <div id="header">
-  <div id="logo">🐟 Stock<span>Mirror</span>Fish <small style="font-size:9px;color:var(--text3)">v4</small></div>
+  <div id="logo">🐟 Stock<span>Mirror</span>Fish <small style="font-size:9px;color:var(--text3)">v4.1</small></div>
   <div id="watchlist-row">
-    <div id="chip-search">
-      <span style="color:var(--text3);font-size:11px">⌕</span>
-      <input type="text" id="search-input" placeholder="Ticker…" maxlength="8" autocomplete="off"/>
+    <!-- search with autocomplete -->
+    <div id="search-wrap">
+      <div id="chip-search">
+        <span style="color:var(--text3);font-size:11px">⌕</span>
+        <input type="text" id="search-input" placeholder="Search stock…" maxlength="12" autocomplete="off"/>
+      </div>
+      <div id="search-dropdown" class="hidden"></div>
     </div>
+    <!-- watchlist chips injected here -->
   </div>
   <div id="header-right">
-    <span id="countdown"></span>
+    <div id="market-pill" class="closed"><span id="market-dot"></span><span id="market-label">—</span></div>
+    <span id="countdown" style="font-size:10px;color:var(--text3)"></span>
+    <button class="hbtn" onclick="openScreener()">📋 Screener</button>
     <button class="hbtn" onclick="refreshAll()">↻ Refresh</button>
     <button class="hbtn" id="clear-btn" onclick="clearCache()">⊗ Cache</button>
   </div>
@@ -382,6 +480,57 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
   </div>
 </div>
 
+<!-- ═══ SCREENER PANEL ══════════════════════════════════════ -->
+<div id="screener-panel">
+  <div id="screener-hdr">
+    <span id="screener-title">📋 Stock Screener</span>
+    <span style="font-size:9px;color:var(--text3);margin-left:8px">Live data · Click any row to analyze</span>
+    <div id="screener-filters" style="margin-left:16px;border:none;padding:0;background:none">
+      <select class="sf-select" id="sf-sort" onchange="loadScreener()">
+        <option value="score">Sort: Score</option>
+        <option value="change">Sort: % Change</option>
+        <option value="rsi">Sort: RSI</option>
+        <option value="vol">Sort: Volume Z</option>
+        <option value="sortino">Sort: Sortino</option>
+      </select>
+      <select class="sf-select" id="sf-score" onchange="loadScreener()">
+        <option value="-100">All scores</option>
+        <option value="0">Score ≥ 0</option>
+        <option value="30">Score ≥ 30 (Buy)</option>
+        <option value="60">Score ≥ 60 (Strong Buy)</option>
+      </select>
+      <select class="sf-select" id="sf-rsi-max" onchange="loadScreener()">
+        <option value="100">Any RSI</option>
+        <option value="70">RSI ≤ 70</option>
+        <option value="50">RSI ≤ 50</option>
+        <option value="30">RSI ≤ 30 (Oversold)</option>
+      </select>
+      <span id="screener-count"></span>
+    </div>
+    <button id="screener-close" onclick="closeScreener()">✕ Close</button>
+  </div>
+  <div id="screener-body">
+    <div class="loading" id="screener-loading"><span class="spin"></span>Loading screener…</div>
+    <table id="screener-table" class="hidden">
+      <thead><tr>
+        <th onclick="setSFSort('score')">Symbol ↕</th>
+        <th onclick="setSFSort('change')">Price</th>
+        <th onclick="setSFSort('change')">Change</th>
+        <th onclick="setSFSort('score')">Score</th>
+        <th onclick="setSFSort('rsi')">RSI</th>
+        <th onclick="setSFSort('vol')">Vol Z</th>
+        <th onclick="setSFSort('sortino')">Sortino</th>
+        <th>Stop</th>
+        <th>Target</th>
+        <th>R/R</th>
+        <th>½-Kelly</th>
+        <th>Rec.</th>
+      </tr></thead>
+      <tbody id="screener-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
 <!-- ═══ STATUS BAR ════════════════════════════════════════ -->
 <div id="statusbar">
   <span><span id="sdot"></span></span>
@@ -464,7 +613,6 @@ async function loadWatchlist() {
 
 function renderChips(stocks) {
   const row = document.getElementById('watchlist-row');
-  const srch = document.getElementById('chip-search');
   row.querySelectorAll('.chip').forEach(c => c.remove());
   stocks.forEach(s => {
     if (s.error) return;
@@ -490,7 +638,7 @@ function renderChips(stocks) {
       <div class="chip-chg ${up?'up':'dn'}">${up?'+':''}${(s.change_pct||0).toFixed(2)}%</div>
     `;
     chip.onclick = () => selectStock(s.symbol);
-    row.insertBefore(chip, srch);
+    row.appendChild(chip);
   });
 }
 
@@ -955,13 +1103,274 @@ setInterval(() => {
   document.getElementById('s-time').textContent = new Date().toLocaleTimeString();
 }, 1000);
 
+// ═══════════════════════════════════════════════════════════
+//  LIVE ENGINE — SSE price stream
+// ═══════════════════════════════════════════════════════════
+let _sse = null;
+let _lastPrices = {};
+
+function startSSE() {
+  if (_sse) { _sse.close(); _sse = null; }
+  const syms = S.wlData.map(s => s.symbol).join(',') || S.symbol;
+  _sse = new EventSource(`${BASE}/api/stream?symbols=${syms}`);
+
+  _sse.onmessage = (e) => {
+    try {
+      const { prices, market, ts } = JSON.parse(e.data);
+      updateMarketPill(market);
+      if (prices && Object.keys(prices).length > 0) {
+        applyLivePrices(prices);
+        // Reset countdown to show "live" state
+        document.getElementById('countdown').textContent = '🔴 LIVE';
+      }
+    } catch {}
+  };
+
+  _sse.onerror = () => {
+    // EventSource auto-reconnects; just update UI
+    document.getElementById('countdown').textContent = '⟳ reconnecting…';
+    updateMarketPill('reconnecting');
+  };
+}
+
+function applyLivePrices(prices) {
+  Object.entries(prices).forEach(([sym, d]) => {
+    const prev = _lastPrices[sym];
+    const priceChanged = !prev || prev.price !== d.price;
+
+    if (priceChanged) {
+      const up = d.change_pct >= 0;
+
+      // ── Update watchlist chip ─────────────────────────
+      const chip = document.querySelector(`.chip[data-sym="${sym}"]`);
+      if (chip) {
+        const priceEl = chip.querySelector('.chip-price');
+        const chgEl   = chip.querySelector('.chip-chg');
+        if (priceEl) priceEl.textContent = '$' + d.price.toFixed(2);
+        if (chgEl) {
+          chgEl.textContent = (up ? '+' : '') + d.change_pct.toFixed(2) + '%';
+          chgEl.className = 'chip-chg ' + (up ? 'up' : 'dn');
+        }
+        // Flash animation
+        chip.classList.remove('flash-up', 'flash-dn');
+        void chip.offsetWidth; // force reflow
+        chip.classList.add(up ? 'flash-up' : 'flash-dn');
+      }
+
+      // ── Update status bar if this is the selected stock ──
+      if (sym === S.symbol) {
+        document.getElementById('s-price').textContent = '$' + d.price.toFixed(2);
+        const chgEl = document.getElementById('s-chg');
+        chgEl.textContent = (up ? '+' : '') + d.change_pct.toFixed(2) + '%';
+        chgEl.className = up ? 'up' : 'dn';
+      }
+
+      // ── Update screener row if panel is open ─────────
+      updateScreenerRow(sym, d);
+    }
+    _lastPrices[sym] = d;
+  });
+}
+
+function updateMarketPill(session) {
+  const pill = document.getElementById('market-pill');
+  const label = document.getElementById('market-label');
+  if (!pill || !label) return;
+  label.textContent = session || '—';
+  pill.className = 'closed';
+  if (session && session.includes('open')) pill.className = 'open';
+  else if (session && session.includes('pre')) pill.className = 'pre';
+}
+
+// ═══════════════════════════════════════════════════════════
+//  SEARCH AUTOCOMPLETE
+// ═══════════════════════════════════════════════════════════
+let _searchTimer = null;
+
+document.getElementById('search-input').addEventListener('input', (e) => {
+  const q = e.target.value.trim();
+  clearTimeout(_searchTimer);
+  if (!q) { hideDropdown(); return; }
+  _searchTimer = setTimeout(() => fetchSearch(q), 280); // 280ms debounce
+});
+
+document.getElementById('search-input').addEventListener('keydown', async (e) => {
+  if (e.key === 'Escape') { hideDropdown(); e.target.value = ''; return; }
+  if (e.key === 'Enter') {
+    const sym = e.target.value.trim().toUpperCase();
+    if (!sym) return;
+    hideDropdown();
+    e.target.value = '';
+    await selectStock(sym);
+  }
+  if (e.key === 'ArrowDown') {
+    const first = document.querySelector('.sd-item');
+    if (first) first.focus();
+  }
+});
+
+// Close dropdown on outside click
+document.addEventListener('click', (e) => {
+  if (!document.getElementById('search-wrap').contains(e.target)) hideDropdown();
+});
+
+async function fetchSearch(q) {
+  const dd = document.getElementById('search-dropdown');
+  dd.innerHTML = '<div class="sd-loading"><span class="spin" style="width:10px;height:10px;border-width:1px"></span> Searching…</div>';
+  dd.classList.remove('hidden');
+
+  const data = await api(`/api/search?q=${encodeURIComponent(q)}&limit=8`);
+  if (!data || !data.results || data.results.length === 0) {
+    dd.innerHTML = `<div class="sd-empty">No results for "${q}"</div>`;
+    return;
+  }
+
+  dd.innerHTML = data.results.map(r => {
+    const live = _lastPrices[r.symbol];
+    const price = live ? live.price : r.price;
+    const pct   = live ? live.change_pct : r.change_pct;
+    const up = (pct || 0) >= 0;
+    return `<div class="sd-item" tabindex="0"
+        onclick="pickSearchResult('${r.symbol}')"
+        onkeydown="if(event.key==='Enter')pickSearchResult('${r.symbol}')">
+      <div class="sd-sym">${r.symbol}</div>
+      <div>
+        <div class="sd-name">${r.name || r.symbol}</div>
+        <div class="sd-exch">${r.exchange || ''} · ${r.type || 'EQUITY'}</div>
+      </div>
+      <div class="sd-price" style="color:${up?'var(--green)':'var(--red)'}">
+        ${price ? '$' + price.toFixed(2) : '—'}<br>
+        <span style="font-size:8px">${pct != null ? (up?'+':'')+pct.toFixed(2)+'%' : ''}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function pickSearchResult(sym) {
+  hideDropdown();
+  document.getElementById('search-input').value = '';
+  await selectStock(sym);
+}
+
+function hideDropdown() {
+  document.getElementById('search-dropdown').classList.add('hidden');
+  document.getElementById('search-dropdown').innerHTML = '';
+}
+
+// ═══════════════════════════════════════════════════════════
+//  SCREENER PANEL
+// ═══════════════════════════════════════════════════════════
+function openScreener() {
+  document.getElementById('screener-panel').classList.add('open');
+  loadScreener();
+}
+function closeScreener() {
+  document.getElementById('screener-panel').classList.remove('open');
+}
+function setSFSort(v) {
+  document.getElementById('sf-sort').value = v;
+  loadScreener();
+}
+
+async function loadScreener() {
+  const sort     = document.getElementById('sf-sort').value;
+  const minScore = document.getElementById('sf-score').value;
+  const maxRsi   = document.getElementById('sf-rsi-max').value;
+
+  document.getElementById('screener-loading').classList.remove('hidden');
+  document.getElementById('screener-table').classList.add('hidden');
+
+  const data = await api(
+    `/api/screener?sort=${sort}&min_score=${minScore}&max_rsi=${maxRsi}`
+  );
+
+  document.getElementById('screener-loading').classList.add('hidden');
+  if (!data || !data.stocks) return;
+
+  document.getElementById('screener-count').textContent =
+    `${data.count} stocks · ${data.market}`;
+
+  const tbody = document.getElementById('screener-tbody');
+  tbody.innerHTML = '';
+  data.stocks.forEach(s => {
+    const lv = s.levels || {};
+    const k  = lv.kelly || {};
+    const score = s.score || 0;
+    const rsi   = s.rsi   || 50;
+    const vz    = s.volume_zscore ?? 0;
+    const sortino = s.sortino ?? 0;
+    const up    = (s.change_pct || 0) >= 0;
+    const live = _lastPrices[s.symbol];
+    const price    = live ? live.price    : s.price;
+    const changePct = live ? live.change_pct : s.change_pct;
+    const sClr = score>=40?'#00e676':score>=0?'#ffaa00':'#ff4466';
+    const rr = lv.risk_reward || 0;
+
+    const tr = document.createElement('tr');
+    tr.dataset.sym = s.symbol;
+    tr.onclick = () => { closeScreener(); selectStock(s.symbol); };
+    tr.innerHTML = `
+      <td style="color:var(--cyan);font-weight:700">${s.symbol}
+        <div style="font-size:8px;color:var(--text3);font-weight:400">${(s.company_name||'').slice(0,18)}</div>
+      </td>
+      <td style="font-weight:700">$${(price||0).toFixed(2)}</td>
+      <td style="color:${up?'var(--green)':'var(--red)'};font-weight:700">
+        ${up?'+':''}${(changePct||0).toFixed(2)}%
+        ${s.live ? '<span style="font-size:7px;color:var(--green)">●LIVE</span>' : ''}
+      </td>
+      <td><span class="spill" style="background:${sClr}22;color:${sClr}">${score>=0?'+':''}${score.toFixed(0)}</span></td>
+      <td style="color:${rsi>70?'var(--red)':rsi<30?'var(--green)':'var(--text2)'}">
+        ${rsi.toFixed(1)}
+      </td>
+      <td style="color:${Math.abs(vz)>2?'var(--purple)':vz>1?'var(--green)':'var(--text2)'}">
+        ${(vz>=0?'+':'')+vz.toFixed(1)}σ
+      </td>
+      <td style="color:${sortino>1?'var(--green)':sortino<0?'var(--red)':'var(--text2)'}">
+        ${sortino.toFixed(2)}
+      </td>
+      <td style="color:var(--red);font-size:10px">${lv.stop_loss?'$'+lv.stop_loss:'—'}</td>
+      <td style="color:var(--green);font-size:10px">${lv.target?'$'+lv.target:'—'}</td>
+      <td class="${rr>=2?'rr-ok':rr>=1?'rr-meh':'rr-bad'}">${rr?'1:'+rr:'—'}</td>
+      <td style="color:var(--cyan)">${k.half_kelly!=null?k.half_kelly+'%':'—'}</td>
+      <td style="color:${sClr};font-size:10px">${s.recommendation||'—'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  document.getElementById('screener-table').classList.remove('hidden');
+}
+
+function updateScreenerRow(sym, d) {
+  const panel = document.getElementById('screener-panel');
+  if (!panel.classList.contains('open')) return;
+  const row = document.querySelector(`#screener-tbody tr[data-sym="${sym}"]`);
+  if (!row) return;
+  const cells = row.querySelectorAll('td');
+  if (cells[1]) cells[1].textContent = '$' + d.price.toFixed(2);
+  if (cells[2]) {
+    const up = d.change_pct >= 0;
+    cells[2].innerHTML = `${up?'+':''}${d.change_pct.toFixed(2)}% <span style="font-size:7px;color:var(--green)">●LIVE</span>`;
+    cells[2].style.color = up ? 'var(--green)' : 'var(--red)';
+    row.classList.remove('flash-up','flash-dn');
+    void row.offsetWidth;
+    row.classList.add(up ? 'flash-up' : 'flash-dn');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Override chip rendering to add live dot + keep chip order
+// ═══════════════════════════════════════════════════════════
+const _origRenderChips = renderChips;
+// Patch: after chips render, start SSE
+const _origLoadWatchlist = loadWatchlist;
+
 // ───────────────────────────────────────────────────────────
 //  Init
 // ───────────────────────────────────────────────────────────
 async function init() {
   await Promise.all([loadHeatmap(), loadWatchlist()]);
   await selectStock(S.symbol);
-  startCountdown();
+  startSSE();          // 🔴 SSE replaces the countdown timer for live data
+  startCountdown();    // keep as fallback UI for full data refresh
 }
 init();
 </script>
