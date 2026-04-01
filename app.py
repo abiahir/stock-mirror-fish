@@ -1125,7 +1125,7 @@ async def screener(
 def root():
     if os.path.exists("dashboard.html"):
         return FileResponse("dashboard.html")
-    return {"status":"Stock Mirror Fish v4 Live — Research Edition","docs":"/docs"}
+    return {"status":"Stock Mirror Fish v4.1 — Live Edition","docs":"/docs"}
 
 if __name__=="__main__":
     import uvicorn
