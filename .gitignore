@@ -1,0 +1,49 @@
+# ─── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ─── Virtual Environments ──────────────────────────────────
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# ─── IDE & Editor ──────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Jupyter ───────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ─── Logs ──────────────────────────────────────────────────
+*.log
+logs/
+
+# ─── Cache ─────────────────────────────────────────────────
+.cache/
+*.cache
+.qodo/
+
+# ─── OS ────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+ehthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.lnk
