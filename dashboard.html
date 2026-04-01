@@ -1123,7 +1123,9 @@ function startSSE() {
         // Reset countdown to show "live" state
         document.getElementById('countdown').textContent = '🔴 LIVE';
       }
-    } catch {}
+    } catch (err) {
+      console.debug('[SMF SSE] message handler', err);
+    }
   };
 
   _sse.onerror = () => {
@@ -1214,14 +1216,22 @@ document.addEventListener('click', (e) => {
   if (!document.getElementById('search-wrap').contains(e.target)) hideDropdown();
 });
 
+function _escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
 async function fetchSearch(q) {
   const dd = document.getElementById('search-dropdown');
   dd.innerHTML = '<div class="sd-loading"><span class="spin" style="width:10px;height:10px;border-width:1px"></span> Searching…</div>';
   dd.classList.remove('hidden');
 
   const data = await api(`/api/search?q=${encodeURIComponent(q)}&limit=8`);
-  if (!data || !data.results || data.results.length === 0) {
-    dd.innerHTML = `<div class="sd-empty">No results for "${q}"</div>`;
+  if (!data || data.error) {
+    dd.innerHTML = '<div class="sd-empty">Search is temporarily unavailable.</div>';
+    return;
+  }
+  if (!data.results || data.results.length === 0) {
+    dd.innerHTML = `<div class="sd-empty">No results for "${_escapeHtml(q)}"</div>`;
     return;
   }
 
