@@ -28,7 +28,7 @@ _market_status: dict = {"open": False, "session": "closed", "checked": 0}
 ET = ZoneInfo("America/New_York")
 
 def is_market_open() -> bool:
-    """US market open: 9:30–16:00 ET, Mon–Fri. Cached for 30s."""
+    """US regular session: 9:30 AM–before 4:00 PM ET, Mon–Fri. Cached for 30s."""
     global _market_status
     now_ts = time.time()
     if now_ts - _market_status["checked"] < 30:
@@ -43,7 +43,7 @@ def is_market_open() -> bool:
         session = "closed (pre-pre)"; open_ = False
     elif t < dtime(9, 30):
         session = "pre-market"; open_ = False
-    elif t <= dtime(16, 0):
+    elif t < dtime(16, 0):
         session = "open 🟢"; open_ = True
     elif t <= dtime(20, 0):
         session = "after-hours"; open_ = False
@@ -945,7 +945,7 @@ def clear_cache():
 
 @app.get("/api/health")
 def health():
-    return {"status":"ok","version":"4.0.0","cache_keys":len(_cache),
+    return {"status":"ok","version":"4.1.0","cache_keys":len(_cache),
             "watchlist_size":len(DEFAULT_WATCHLIST),"sectors":len(SECTOR_ETFS),
             "ts":datetime.now().isoformat()}
 
