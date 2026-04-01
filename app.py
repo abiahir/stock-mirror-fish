@@ -1,22 +1,109 @@
 #!/usr/bin/env python3
 """
-Stock Mirror Fish v4 — Research Edition
-Built on: Kelly Criterion, Sortino/Calmar/CVaR, ATR stops, sector heatmaps,
-volume anomaly detection, sparklines — inspired by TradingView, Finviz,
-Trade Ideas Holly AI, Unusual Whales, and Bloomberg best practices.
+Stock Mirror Fish v4 — Live Edition
+Real-time price engine: smart poller → _live cache → SSE → browser.
+Market-hours-aware: 10s ticks open, 60s ticks closed, skip weekends.
+Zero extra packages — stdlib asyncio + zoneinfo + urllib only.
 """
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import asynccontextmanager
+from zoneinfo import ZoneInfo
+from datetime import datetime, time as dtime
+import asyncio, json, math, os, time, threading
+import urllib.request, urllib.parse
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime
-import math, os, time, threading
 
-app = FastAPI(title="Stock Mirror Fish", version="4.0.0")
+# ─────────────────────────────────────────────
+#  Live price cache  (updated by background poller)
+# ─────────────────────────────────────────────
+_live: dict = {}          # {"AAPL": {"price":182.5,"change":0.35,"pct":0.19,"ts":...}}
+_market_status: dict = {"open": False, "session": "closed", "checked": 0}
+
+ET = ZoneInfo("America/New_York")
+
+def is_market_open() -> bool:
+    """US market open: 9:30–16:00 ET, Mon–Fri. Cached for 30s."""
+    global _market_status
+    now_ts = time.time()
+    if now_ts - _market_status["checked"] < 30:
+        return _market_status["open"]
+    now = datetime.now(ET)
+    weekday = now.weekday()
+    t = now.time()
+    if weekday >= 5:
+        session = "closed (weekend)"
+        open_ = False
+    elif t < dtime(4, 0):
+        session = "closed (pre-pre)"; open_ = False
+    elif t < dtime(9, 30):
+        session = "pre-market"; open_ = False
+    elif t <= dtime(16, 0):
+        session = "open 🟢"; open_ = True
+    elif t <= dtime(20, 0):
+        session = "after-hours"; open_ = False
+    else:
+        session = "closed"; open_ = False
+    _market_status = {"open": open_, "session": session, "checked": now_ts}
+    return open_
+
+def _fetch_live_batch(symbols: list) -> dict:
+    """Fetch current prices for all symbols in parallel using fast_info."""
+    results = {}
+    def _one(sym):
+        try:
+            fi = yf.Ticker(sym).fast_info
+            price = float(fi.last_price) if fi.last_price else None
+            prev  = float(fi.previous_close) if fi.previous_close else None
+            if price is None: return
+            chg     = round(price - prev, 2) if prev else 0
+            chg_pct = round((price - prev) / prev * 100, 2) if prev else 0
+            results[sym] = {
+                "price":      round(price, 2),
+                "prev_close": round(prev, 2) if prev else None,
+                "change":     chg,
+                "change_pct": chg_pct,
+                "ts":         int(time.time()),
+            }
+        except:
+            pass
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        list(ex.map(_one, symbols))
+    return results
+
+async def _price_poller():
+    """
+    Background task: polls yfinance every 10s (market open) or 60s (closed).
+    Updates _live cache — all SSE clients pick it up automatically.
+    """
+    await asyncio.sleep(3)   # let server finish starting
+    loop = asyncio.get_event_loop()
+    while True:
+        try:
+            results = await loop.run_in_executor(
+                None, _fetch_live_batch, DEFAULT_WATCHLIST
+            )
+            _live.update(results)
+        except Exception as e:
+            pass
+        interval = 10 if is_market_open() else 60
+        await asyncio.sleep(interval)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start background price poller on server startup."""
+    task = asyncio.create_task(_price_poller())
+    yield
+    task.cancel()
+    try: await task
+    except asyncio.CancelledError: pass
+
+app = FastAPI(title="Stock Mirror Fish", version="4.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 DEFAULT_WATCHLIST = [
@@ -862,19 +949,193 @@ def health():
             "watchlist_size":len(DEFAULT_WATCHLIST),"sectors":len(SECTOR_ETFS),
             "ts":datetime.now().isoformat()}
 
+# ─────────────────────────────────────────────
+#  Live Data Endpoints
+# ─────────────────────────────────────────────
+
+@app.get("/api/stream")
+async def sse_stream(request: Request, symbols: str = ""):
+    """
+    Server-Sent Events endpoint — streams live prices to the browser.
+    Browser connects once with EventSource; server pushes every 2 seconds.
+    Automatically reconnects if connection drops (EventSource spec).
+    """
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()] \
+           if symbols else DEFAULT_WATCHLIST
+
+    async def generator():
+        last_sent = {}
+        while True:
+            if await request.is_disconnected():
+                break
+            payload = {}
+            for sym in syms:
+                d = _live.get(sym)
+                if d:
+                    payload[sym] = d
+            # Always send current data + market status
+            envelope = {
+                "prices":  payload,
+                "market":  _market_status.get("session", "unknown"),
+                "ts":      int(time.time()),
+            }
+            yield f"data: {json.dumps(envelope)}\n\n"
+            await asyncio.sleep(2)
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":   "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection":       "keep-alive",
+        },
+    )
+
+@app.get("/api/live")
+def live_snapshot(symbols: str = ""):
+    """Snapshot of current live prices (non-streaming, for initial load)."""
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()] \
+           if symbols else DEFAULT_WATCHLIST
+    return {
+        "prices":  {s: _live[s] for s in syms if s in _live},
+        "market":  _market_status.get("session", "unknown"),
+        "ts":      int(time.time()),
+    }
+
+@app.get("/api/market-status")
+def market_status():
+    """Current US market session status."""
+    is_market_open()   # refresh cache if stale
+    return _market_status
+
+@app.get("/api/search")
+async def search_stocks(q: str = "", limit: int = 8):
+    """
+    Stock symbol autocomplete — proxies Yahoo Finance search API.
+    Returns symbol, name, exchange, type. No API key required.
+    Results cached 5 min (symbols don't change often).
+    """
+    if not q or len(q.strip()) < 1:
+        return {"results": []}
+    q = q.strip().upper()
+    cache_key = f"search:{q}"
+    cached = cache_get(cache_key)
+    if cached: return cached
+
+    def _fetch():
+        try:
+            url = (
+                "https://query1.finance.yahoo.com/v1/finance/search"
+                f"?q={urllib.parse.quote(q)}&quotesCount={limit}&newsCount=0"
+                "&enableFuzzyQuery=true&quotesQueryId=tss_match_phrase_query"
+            )
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read())
+            quotes = data.get("quotes", [])
+            results = []
+            for q_item in quotes:
+                sym = q_item.get("symbol", "")
+                if not sym or "^" in sym: continue   # skip indices
+                results.append({
+                    "symbol":   sym,
+                    "name":     q_item.get("longname") or q_item.get("shortname", sym),
+                    "exchange": q_item.get("exchange", ""),
+                    "type":     q_item.get("quoteType", "EQUITY"),
+                    "sector":   q_item.get("sector", ""),
+                    # Inject live price if we have it
+                    "price":    _live.get(sym, {}).get("price"),
+                    "change_pct": _live.get(sym, {}).get("change_pct"),
+                })
+            return {"results": results}
+        except Exception as e:
+            return {"results": [], "error": str(e)}
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _fetch)
+    cache_set(cache_key, result)
+    return result
+
+@app.get("/api/screener")
+async def screener(
+    sector: str = "",
+    min_score: float = -100,
+    max_rsi: float = 100,
+    min_rsi: float = 0,
+    sort: str = "score",
+    symbols: str = "",
+):
+    """
+    Returns watchlist data filtered + sorted for the screener panel.
+    Inject live prices from _live cache before returning.
+    """
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()] \
+           if symbols else DEFAULT_WATCHLIST
+    key = f"wl:{','.join(syms)}"
+    wl_data = cache_get(key)
+    if not wl_data:
+        # Trigger watchlist build if not cached
+        wl_data = watchlist(symbols=",".join(syms))
+
+    stocks = wl_data.get("watchlist", []) if isinstance(wl_data, dict) else []
+
+    # Inject live prices
+    for s in stocks:
+        sym = s.get("symbol", "")
+        live = _live.get(sym)
+        if live:
+            s["price"]      = live["price"]
+            s["change_pct"] = live["change_pct"]
+            s["change"]     = live["change"]
+            s["live"]       = True
+
+    # Filter
+    if sector:
+        stocks = [s for s in stocks if s.get("sector","").lower() == sector.lower()]
+    stocks = [s for s in stocks if s.get("score", 0) >= min_score]
+    t_stocks = []
+    for s in stocks:
+        rsi = s.get("rsi", 50)
+        if min_rsi <= rsi <= max_rsi:
+            t_stocks.append(s)
+    stocks = t_stocks
+
+    # Sort
+    sort_map = {
+        "score":   lambda s: s.get("score", 0),
+        "rsi":     lambda s: s.get("rsi", 50),
+        "vol":     lambda s: abs(s.get("volume_zscore", 0)),
+        "sortino": lambda s: s.get("sortino", 0),
+        "change":  lambda s: s.get("change_pct", 0),
+    }
+    stocks = sorted(stocks, key=sort_map.get(sort, sort_map["score"]), reverse=True)
+
+    return {
+        "stocks":  stocks,
+        "count":   len(stocks),
+        "market":  _market_status.get("session", "unknown"),
+        "filters": {"sector": sector, "min_score": min_score, "sort": sort},
+    }
+
 @app.get("/")
 def root():
     if os.path.exists("dashboard.html"):
         return FileResponse("dashboard.html")
-    return {"status":"Stock Mirror Fish v4 — Research Edition","docs":"/docs"}
+    return {"status":"Stock Mirror Fish v4 Live — Research Edition","docs":"/docs"}
 
 if __name__=="__main__":
     import uvicorn
-    print("\n"+"="*58)
-    print("  🐟  STOCK MIRROR FISH  v4  — Research Edition")
-    print("="*58)
+    print("\n"+"="*60)
+    print("  🐟  STOCK MIRROR FISH  v4.1  — Live Edition")
+    print("="*60)
     print(f"  📊  Dashboard  → http://localhost:8080")
     print(f"  📡  API Docs   → http://localhost:8080/docs")
+    print(f"  🔴  SSE Stream → http://localhost:8080/api/stream")
+    print(f"  🔍  Search     → http://localhost:8080/api/search?q=AAPL")
     print(f"  💊  Health     → http://localhost:8080/api/health")
     print(f"  🗺   Heatmap   → http://localhost:8080/api/heatmap")
     print(f"  📈  Tracking {len(DEFAULT_WATCHLIST)} stocks + {len(SECTOR_ETFS)} sector ETFs")
