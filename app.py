@@ -1,23 +1,112 @@
 #!/usr/bin/env python3
 """
-Stock Mirror Fish v4 — Research Edition
-Built on: Kelly Criterion, Sortino/Calmar/CVaR, ATR stops, sector heatmaps,
-volume anomaly detection, sparklines — inspired by TradingView, Finviz,
-Trade Ideas Holly AI, Unusual Whales, and Bloomberg best practices.
+Stock Mirror Fish v4 — Live Edition
+Real-time price engine: smart poller → _live cache → SSE → browser.
+Market-hours-aware: 10s ticks open, 60s ticks closed, skip weekends.
+stdlib asyncio + zoneinfo + urllib; optional PyPI `tzdata` supplies IANA zones when OS has none.
 """
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import asynccontextmanager
+from zoneinfo import ZoneInfo
+from datetime import datetime, time as dtime, timezone
+import asyncio, json, logging, math, os, time, threading
+import urllib.error
+import urllib.request, urllib.parse
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime
-import math, os, time, threading
 
-app = FastAPI(title="Stock Mirror Fish", version="4.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+logger = logging.getLogger("smf")
+
+_metrics_lock = threading.Lock()
+_metrics: dict = {}
+
+def _metric_inc(key: str, delta: int = 1) -> None:
+    with _metrics_lock:
+        _metrics[key] = _metrics.get(key, 0) + delta
+
+def metrics_snapshot() -> dict:
+    with _metrics_lock:
+        return dict(_metrics)
+
+def _eastern_tz():
+    """IANA America/New_York, or UTC if zone data missing (install tzdata)."""
+    try:
+        return ZoneInfo("America/New_York")
+    except Exception as e:
+        logger.warning(
+            "ZoneInfo(America/New_York) unavailable (%s); using UTC. "
+            "US session times will be wrong until tzdata is installed.",
+            e,
+        )
+        return timezone.utc
+
+# ─────────────────────────────────────────────
+#  Live price cache  (updated by background poller)
+# ─────────────────────────────────────────────
+_live: dict = {}          # {"AAPL": {"price":182.5,"change":0.35,"pct":0.19,"ts":...}}
+_market_status: dict = {"open": False, "session": "closed", "checked": 0}
+
+ET = _eastern_tz()
+
+def is_market_open() -> bool:
+    """US regular session: 9:30 AM–before 4:00 PM ET, Mon–Fri. Cached for 30s."""
+    global _market_status
+    now_ts = time.time()
+    if now_ts - _market_status["checked"] < 30:
+        return _market_status["open"]
+    now = datetime.now(ET)
+    weekday = now.weekday()
+    t = now.time()
+    if weekday >= 5:
+        session = "closed (weekend)"
+        open_ = False
+    elif t < dtime(4, 0):
+        session = "closed (pre-pre)"; open_ = False
+    elif t < dtime(9, 30):
+        session = "pre-market"; open_ = False
+    elif t < dtime(16, 0):
+        session = "open 🟢"; open_ = True
+    elif t <= dtime(20, 0):
+        session = "after-hours"; open_ = False
+    else:
+        session = "closed"; open_ = False
+    _market_status = {"open": open_, "session": session, "checked": now_ts}
+    return open_
+
+def _fetch_live_batch(symbols: list) -> dict:
+    """Fetch current prices for all symbols in parallel using fast_info."""
+    results = {}
+    def _one(sym):
+        try:
+            fi = yf.Ticker(sym).fast_info
+            price = float(fi.last_price) if fi.last_price else None
+            prev  = float(fi.previous_close) if fi.previous_close else None
+            if price is None: return
+            chg     = round(price - prev, 2) if prev else 0
+            chg_pct = round((price - prev) / prev * 100, 2) if prev else 0
+            results[sym] = {
+                "price":      round(price, 2),
+                "prev_close": round(prev, 2) if prev else None,
+                "change":     chg,
+                "change_pct": chg_pct,
+                "ts":         int(time.time()),
+            }
+        except (AttributeError, KeyError, TypeError, ValueError, OSError, ConnectionError, RuntimeError) as e:
+            logger.debug("yfinance fast_info failed for %s: %s", sym, e)
+            _metric_inc("yfinance_quote_failures")
+        except Exception as e:
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                raise
+            logger.debug("yfinance fast_info unexpected error for %s: %s", sym, e)
+            _metric_inc("yfinance_quote_failures")
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        list(ex.map(_one, symbols))
+    return results
 
 DEFAULT_WATCHLIST = [
     "AAPL","MSFT","NVDA","GOOGL","AMZN",
@@ -39,6 +128,39 @@ SECTOR_ETFS = {
     "Utilities":        "XLU",
     "Comm Svcs":        "XLC",
 }
+
+async def _price_poller():
+    """
+    Background task: polls yfinance every 10s (market open) or 60s (closed).
+    Updates _live cache — all SSE clients pick it up automatically.
+    """
+    await asyncio.sleep(3)   # let server finish starting
+    loop = asyncio.get_event_loop()
+    while True:
+        try:
+            syms = list(DEFAULT_WATCHLIST)
+            results = await loop.run_in_executor(
+                None, _fetch_live_batch, syms
+            )
+            _live.update(results)
+            _metric_inc("price_poller_batches_ok")
+        except Exception as e:
+            logger.warning("Price poller batch failed: %s", e, exc_info=True)
+            _metric_inc("price_poller_failures")
+        interval = 10 if is_market_open() else 60
+        await asyncio.sleep(interval)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start background price poller on server startup."""
+    task = asyncio.create_task(_price_poller())
+    yield
+    task.cancel()
+    try: await task
+    except asyncio.CancelledError: pass
+
+app = FastAPI(title="Stock Mirror Fish", version="4.1.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ─────────────────────────────────────────────
 #  TTL Cache (5-minute expiry, thread-safe)
@@ -63,6 +185,144 @@ def cache_clear():
         _cache.clear()
 
 # ─────────────────────────────────────────────
+#  Yahoo search proxy (HTTP)
+# ─────────────────────────────────────────────
+SEARCH_HTTP_TIMEOUT = 8
+SEARCH_MAX_ATTEMPTS = 4
+SEARCH_BACKOFF_SEC = 0.65
+
+def _sanitize_yahoo_str(val, max_len: int, default: str = "") -> str:
+    """Strip control characters; keep printable Unicode; bound length."""
+    if val is None:
+        return default
+    if not isinstance(val, str):
+        val = str(val)
+    out = "".join(c for c in val if c.isprintable())
+    out = " ".join(out.split())
+    if len(out) > max_len:
+        out = out[:max_len].rstrip()
+    return out if out else default
+
+def _search_http_headers() -> dict:
+    ua = os.environ.get(
+        "SMF_HTTP_USER_AGENT",
+        "StockMirrorFish/4.1.0 (yahoo-finance-search-proxy; +https://github.com)",
+    )
+    return {
+        "User-Agent": ua,
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+def _parse_yahoo_search_json(raw: bytes) -> dict:
+    if not raw or not raw.strip():
+        raise ValueError("empty response body")
+    text = raw.decode("utf-8")
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("search response must be a JSON object")
+    quotes = data.get("quotes", [])
+    if quotes is not None and not isinstance(quotes, list):
+        raise ValueError("quotes must be an array or null")
+    return data
+
+def _normalize_search_quote(q_item: dict, sym: str) -> dict:
+    raw_name = q_item.get("longname") or q_item.get("shortname") or sym
+    if not isinstance(raw_name, str):
+        raw_name = str(raw_name) if raw_name is not None else sym
+    name = _sanitize_yahoo_str(raw_name, 256, sym)
+    qt_raw = q_item.get("quoteType") or "EQUITY"
+    if not isinstance(qt_raw, str):
+        qt_raw = str(qt_raw)
+    qt = _sanitize_yahoo_str(qt_raw, 48, "EQUITY") or "EQUITY"
+    ex_raw = q_item.get("exchange", "")
+    ex_raw = ex_raw if isinstance(ex_raw, str) else (str(ex_raw) if ex_raw is not None else "")
+    ex = _sanitize_yahoo_str(ex_raw, 48, "")
+    sec_raw = q_item.get("sector", "")
+    sec_raw = sec_raw if isinstance(sec_raw, str) else (str(sec_raw) if sec_raw is not None else "")
+    sector = _sanitize_yahoo_str(sec_raw, 96, "")
+    return {
+        "symbol": sym,
+        "name": name,
+        "exchange": ex,
+        "type": qt,
+        "sector": sector,
+        "price": _live.get(sym, {}).get("price"),
+        "change_pct": _live.get(sym, {}).get("change_pct"),
+    }
+
+def _yahoo_finance_search_fetch(q: str, limit: int) -> dict:
+    """GET Yahoo search JSON with exponential backoff; strict validation."""
+    url = (
+        "https://query1.finance.yahoo.com/v1/finance/search"
+        f"?q={urllib.parse.quote(q)}&quotesCount={limit}&newsCount=0"
+        "&enableFuzzyQuery=true&quotesQueryId=tss_match_phrase_query"
+    )
+    headers = _search_http_headers()
+    for attempt in range(SEARCH_MAX_ATTEMPTS):
+        try:
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            with urllib.request.urlopen(req, timeout=SEARCH_HTTP_TIMEOUT) as resp:
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if "json" not in ctype:
+                    raise ValueError(f"unexpected Content-Type: {ctype!r}")
+                raw = resp.read()
+            data = _parse_yahoo_search_json(raw)
+            quotes = data.get("quotes") or []
+            results = []
+            for q_item in quotes:
+                if len(results) >= limit:
+                    break
+                if not isinstance(q_item, dict):
+                    continue
+                sym = q_item.get("symbol")
+                if not sym or not isinstance(sym, str):
+                    continue
+                sym = sym.strip().upper()
+                if not sym or "^" in sym or len(sym) > 32:
+                    continue
+                if not all(c.isalnum() or c in ".-" for c in sym):
+                    continue
+                results.append(_normalize_search_quote(q_item, sym))
+            return {"results": results}
+        except urllib.error.HTTPError as e:
+            retryable = e.code in (429, 500, 502, 503, 504)
+            if retryable and attempt < SEARCH_MAX_ATTEMPTS - 1:
+                logger.warning(
+                    "Yahoo search HTTP %s for q=%r attempt %s/%s, retrying",
+                    e.code, q, attempt + 1, SEARCH_MAX_ATTEMPTS,
+                )
+                time.sleep(SEARCH_BACKOFF_SEC * (2 ** attempt))
+                continue
+            logger.error(
+                "Yahoo search HTTP error %s %s for q=%r",
+                e.code, e.reason, q,
+            )
+            return {"results": [], "error": "unavailable"}
+        except (urllib.error.URLError, TimeoutError, OSError, ConnectionError) as e:
+            if attempt < SEARCH_MAX_ATTEMPTS - 1:
+                logger.warning(
+                    "Yahoo search network error for q=%r attempt %s/%s: %s",
+                    q, attempt + 1, SEARCH_MAX_ATTEMPTS, e,
+                )
+                time.sleep(SEARCH_BACKOFF_SEC * (2 ** attempt))
+                continue
+            logger.error("Yahoo search network failure for q=%r after retries", q, exc_info=True)
+            return {"results": [], "error": "unavailable"}
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
+            if attempt < SEARCH_MAX_ATTEMPTS - 1:
+                logger.warning(
+                    "Yahoo search response invalid for q=%r attempt %s/%s: %s",
+                    q, attempt + 1, SEARCH_MAX_ATTEMPTS, e,
+                )
+                time.sleep(SEARCH_BACKOFF_SEC * (2 ** attempt))
+                continue
+            logger.error("Yahoo search parse/validation failed for q=%r", q, exc_info=True)
+            return {"results": [], "error": "unavailable"}
+    logger.error("Yahoo search exhausted retries for q=%r (unexpected)", q)
+    return {"results": [], "error": "unavailable"}
+
+# ─────────────────────────────────────────────
 #  Safety helpers
 # ─────────────────────────────────────────────
 def safe_float(v, default=None):
@@ -70,13 +330,15 @@ def safe_float(v, default=None):
         if v is None: return default
         f = float(v)
         return default if (math.isnan(f) or math.isinf(f)) else round(f, 6)
-    except: return default
+    except (TypeError, ValueError, OverflowError):
+        return default
 
 def safe_series_val(series, idx=-1, default=None):
     try:
         v = float(series.iloc[idx])
         return default if (math.isnan(v) or math.isinf(v)) else v
-    except: return default
+    except (TypeError, ValueError, IndexError, KeyError, AttributeError):
+        return default
 
 # ─────────────────────────────────────────────
 #  Technical Indicators
@@ -90,7 +352,8 @@ def calc_rsi(prices, period=14):
         rs = g / l
         v  = safe_series_val(100 - (100 / (1 + rs)))
         return round(v, 2) if v is not None else 50.0
-    except: return 50.0
+    except (TypeError, ValueError, IndexError, KeyError, AttributeError, ZeroDivisionError):
+        return 50.0
 
 def calc_macd(prices):
     try:
@@ -105,7 +368,8 @@ def calc_macd(prices):
         return {"macd":round(mv,4),"signal":round(sv,4),"histogram":round(hv,4),
                 "trend":"bullish" if mv>sv else "bearish",
                 "strength":"strong" if abs(hv)>abs(mv)*0.1 else "weak"}
-    except: return {"macd":0,"signal":0,"histogram":0,"trend":"neutral","strength":"weak"}
+    except (TypeError, ValueError, IndexError, KeyError, AttributeError, ZeroDivisionError):
+        return {"macd":0,"signal":0,"histogram":0,"trend":"neutral","strength":"weak"}
 
 def calc_bollinger(prices, period=20):
     try:
@@ -120,7 +384,8 @@ def calc_bollinger(prices, period=20):
         bw  = (uv-lv)/mv if mv>0 else 0.1
         return {"upper":round(uv,2),"middle":round(mv,2),"lower":round(lv,2),
                 "position":round(pos,3),"bandwidth":round(bw,4),"squeeze":bw<0.04}
-    except: return {"upper":0,"middle":0,"lower":0,"position":0.5,"bandwidth":0.1,"squeeze":False}
+    except (TypeError, ValueError, IndexError, KeyError, AttributeError, ZeroDivisionError):
+        return {"upper":0,"middle":0,"lower":0,"position":0.5,"bandwidth":0.1,"squeeze":False}
 
 def calc_mas(prices):
     try:
@@ -140,8 +405,9 @@ def calc_mas(prices):
                 "above_ma20":bool(ma20 and cur and cur>ma20),
                 "above_ma50":bool(ma50 and cur and cur>ma50),
                 "above_ma200":bool(ma200 and cur and cur>ma200)}
-    except: return {"ma20":None,"ma50":None,"ma200":None,"signal":"neutral",
-                    "golden_cross":False,"above_ma20":False,"above_ma50":False,"above_ma200":False}
+    except (TypeError, ValueError, IndexError, KeyError, AttributeError, ZeroDivisionError):
+        return {"ma20":None,"ma50":None,"ma200":None,"signal":"neutral",
+                "golden_cross":False,"above_ma20":False,"above_ma50":False,"above_ma200":False}
 
 def calc_atr(hist, period=14):
     try:
@@ -150,7 +416,8 @@ def calc_atr(hist, period=14):
         tr = pd.concat([hi-lo,(hi-pc).abs(),(lo-pc).abs()],axis=1).max(axis=1)
         v  = safe_series_val(tr.rolling(period).mean())
         return round(v,4) if v else None
-    except: return None
+    except (TypeError, ValueError, IndexError, KeyError, AttributeError, ZeroDivisionError):
+        return None
 
 # ── Research-grade risk metrics ──────────────────
 
@@ -159,7 +426,8 @@ def calc_sharpe(returns, rf=0.05):
         ann = float(returns.mean())*252 - rf
         vol = float(returns.std())*math.sqrt(252)
         return round(ann/vol, 2) if vol>0 else 0.0
-    except: return 0.0
+    except (TypeError, ValueError, IndexError, KeyError, AttributeError, ZeroDivisionError):
+        return 0.0
 
 def calc_sortino(returns, rf=0.05):
     """Sortino ratio — only penalises downside volatility (better than Sharpe for safety)"""
@@ -168,7 +436,8 @@ def calc_sortino(returns, rf=0.05):
         neg     = returns[returns < 0]
         dv      = float(neg.std())*math.sqrt(252) if len(neg)>1 else 0.001
         return round(ann/dv, 2)
-    except: return 0.0
+    except (TypeError, ValueError, IndexError, KeyError, AttributeError, ZeroDivisionError):
+        return 0.0
 
 def calc_calmar(prices, returns):
     """Calmar ratio — annual return / max drawdown (hedge-fund standard)"""
@@ -176,7 +445,8 @@ def calc_calmar(prices, returns):
         ann_ret = float(returns.mean())*252
         dd      = float(((prices/prices.cummax())-1).min())
         return round(ann_ret/abs(dd), 2) if dd < -0.001 else 0.0
-    except: return 0.0
+    except (TypeError, ValueError, IndexError, KeyError, AttributeError, ZeroDivisionError):
+        return 0.0
 
 def calc_cvar(returns, confidence=0.95):
     """Conditional VaR / Expected Shortfall at 95% — Basel III standard, better than VaR"""
@@ -184,13 +454,15 @@ def calc_cvar(returns, confidence=0.95):
         n    = max(1, int(len(returns)*(1-confidence)))
         tail = sorted(returns.tolist())[:n]
         return round(float(np.mean(tail))*100, 3)
-    except: return 0.0
+    except (TypeError, ValueError, IndexError, KeyError, AttributeError, ZeroDivisionError):
+        return 0.0
 
 def calc_max_drawdown(prices):
     try:
         dd = float(((prices/prices.cummax())-1).min())*100
         return round(dd, 2)
-    except: return 0.0
+    except (TypeError, ValueError, IndexError, KeyError, AttributeError, ZeroDivisionError):
+        return 0.0
 
 def calc_volume_zscore(hist):
     """Volume anomaly z-score — inspired by Unusual Whales smart-money detection"""
@@ -200,7 +472,8 @@ def calc_volume_zscore(hist):
         s   = float(vol.rolling(20).std().iloc[-1])
         cur = float(vol.iloc[-1])
         return round((cur-m)/s, 2) if s>0 else 0.0
-    except: return 0.0
+    except (TypeError, ValueError, IndexError, KeyError, AttributeError, ZeroDivisionError):
+        return 0.0
 
 def calc_win_rate_needed(rr_ratio):
     """Minimum win rate for break-even at given R/R ratio"""
@@ -321,7 +594,9 @@ def get_stock(symbol: str, period: str = "6mo"):
                                "low":round(float(row["Low"]),2),
                                "close":round(float(row["Close"]),2),
                                "volume":int(row["Volume"])})
-            except: pass
+            except (TypeError, ValueError, KeyError, OverflowError) as e:
+                logger.debug("chart row skipped for %s: %s", symbol, e)
+                _metric_inc("chart_bar_skipped")
 
         # Sparkline — last 30 closes (Finviz / TradingView pattern)
         sparkline = []
@@ -329,7 +604,8 @@ def get_stock(symbol: str, period: str = "6mo"):
             try:
                 fv = float(v)
                 if not math.isnan(fv): sparkline.append(round(fv,2))
-            except: pass
+            except (TypeError, ValueError, OverflowError):
+                _metric_inc("sparkline_value_skipped")
 
         result = {
             "symbol":        symbol,
@@ -387,6 +663,8 @@ def get_stock(symbol: str, period: str = "6mo"):
         cache_set(key, result)
         return result
     except Exception as e:
+        logger.exception("get_stock failed for %s", symbol)
+        _metric_inc("get_stock_failures")
         return {"error": str(e), "symbol": symbol}
 
 # ─────────────────────────────────────────────
@@ -769,7 +1047,10 @@ def _wl_item(sym):
                 "sector":d.get("fundamentals",{}).get("sector",""),
                 "market_cap":d.get("fundamentals",{}).get("market_cap"),
                 "levels":levels,"sparkline":d.get("sparkline",[])}
-    except: return None
+    except Exception as e:
+        logger.debug("watchlist item failed for %s: %s", sym, e)
+        _metric_inc("watchlist_item_failures")
+        return None
 
 @app.get("/api/watchlist")
 def watchlist(symbols: str = ""):
@@ -799,7 +1080,10 @@ def _sector_item(args):
                 "price":d.get("current_price"),
                 "volume_zscore":t.get("volume_zscore",0),
                 "rsi":t.get("rsi",50)}
-    except: return None
+    except Exception as e:
+        logger.debug("sector heatmap item failed for %s: %s", etf, e)
+        _metric_inc("heatmap_item_failures")
+        return None
 
 @app.get("/api/heatmap")
 def sector_heatmap():
@@ -858,23 +1142,290 @@ def clear_cache():
 
 @app.get("/api/health")
 def health():
-    return {"status":"ok","version":"4.0.0","cache_keys":len(_cache),
+    return {"status":"ok","version":"4.1.0","cache_keys":len(_cache),
             "watchlist_size":len(DEFAULT_WATCHLIST),"sectors":len(SECTOR_ETFS),
-            "ts":datetime.now().isoformat()}
+            "ts":datetime.now().isoformat(),
+            "metrics":metrics_snapshot()}
+
+# ─────────────────────────────────────────────
+#  Live Data Endpoints
+# ─────────────────────────────────────────────
+
+SSE_CHUNK_SYMBOLS = 25
+SSE_MAX_STREAM_SYMBOLS = 200
+SSE_JSON_MAX_BYTES = 256_000
+
+def _sse_valid_symbol(sym: str) -> bool:
+    if not sym or not isinstance(sym, str) or len(sym) > 32:
+        return False
+    return all(c.isalnum() or c in ".-" for c in sym)
+
+def _sse_sanitize_live_row(d: dict) -> dict:
+    """Only known numeric fields; reject NaN/Inf for JSON."""
+    if not isinstance(d, dict):
+        return {}
+    out = {}
+    for k in ("price", "prev_close", "change", "change_pct"):
+        v = d.get(k)
+        if v is None:
+            continue
+        try:
+            f = float(v)
+            if math.isnan(f) or math.isinf(f):
+                continue
+            out[k] = round(f, 4)
+        except (TypeError, ValueError):
+            continue
+    vts = d.get("ts")
+    if vts is not None:
+        try:
+            out["ts"] = int(vts)
+        except (TypeError, ValueError):
+            out["ts"] = int(time.time())
+    return out
+
+def _sse_sanitize_market(s) -> str:
+    if s is None:
+        return "unknown"
+    t = str(s)[:240]
+    t = "".join(c for c in t if c.isprintable())
+    return t.strip() or "unknown"
+
+def _sse_json_line(obj: dict):
+    """Serialize for SSE; never raises to caller."""
+    try:
+        s = json.dumps(obj, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+    except (TypeError, ValueError, RecursionError, OverflowError) as e:
+        logger.error("SSE json.dumps failed: %s", e)
+        _metric_inc("sse_json_dumps_failures")
+        try:
+            s = json.dumps(
+                {"prices": {}, "market": "unknown", "ts": int(time.time())},
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+        except (TypeError, ValueError, RecursionError):
+            return None
+    if len(s) > SSE_JSON_MAX_BYTES:
+        logger.warning("SSE payload over size cap (%s bytes); sending minimal frame", len(s))
+        _metric_inc("sse_payload_truncated")
+        try:
+            s = json.dumps(
+                {"prices": {}, "market": "unknown", "ts": int(time.time()), "truncated": True},
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+        except (TypeError, ValueError, RecursionError):
+            return None
+    return f"data: {s}\n\n"
+
+def _iter_sse_price_events(syms: list):
+    """Build one or more SSE data lines (chunked). Returns list of lines."""
+    lines = []
+    ts = int(time.time())
+    market = _sse_sanitize_market(_market_status.get("session", "unknown"))
+    payload = {}
+    for sym in syms:
+        if not _sse_valid_symbol(sym):
+            continue
+        raw = _live.get(sym)
+        if not raw:
+            continue
+        row = _sse_sanitize_live_row(raw)
+        if row:
+            payload[sym] = row
+    if not payload:
+        line = _sse_json_line({"prices": {}, "market": market, "ts": ts})
+        return [line] if line else []
+
+    items = list(payload.items())
+    if len(items) <= SSE_CHUNK_SYMBOLS:
+        line = _sse_json_line({"prices": dict(items), "market": market, "ts": ts})
+        return [line] if line else []
+
+    nchunks = (len(items) + SSE_CHUNK_SYMBOLS - 1) // SSE_CHUNK_SYMBOLS
+    for i in range(0, len(items), SSE_CHUNK_SYMBOLS):
+        chunk = dict(items[i : i + SSE_CHUNK_SYMBOLS])
+        idx = i // SSE_CHUNK_SYMBOLS + 1
+        line = _sse_json_line(
+            {"prices": chunk, "market": market, "ts": ts, "chunk": idx, "chunks": nchunks}
+        )
+        if line:
+            lines.append(line)
+    return lines
+
+@app.get("/api/stream")
+async def sse_stream(request: Request, symbols: str = ""):
+    """
+    Server-Sent Events endpoint — streams live prices to the browser.
+    Browser connects once with EventSource; server pushes every 2 seconds.
+    Automatically reconnects if connection drops (EventSource spec).
+    """
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()] \
+           if symbols else list(DEFAULT_WATCHLIST)
+    syms = syms[:SSE_MAX_STREAM_SYMBOLS]
+
+    async def generator():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    for line in _iter_sse_price_events(syms):
+                        if line:
+                            _metric_inc("sse_data_lines_sent")
+                            yield line
+                except Exception:
+                    logger.exception("SSE tick iteration failed")
+                    _metric_inc("sse_tick_failures")
+                    fb = _sse_json_line(
+                        {"prices": {}, "market": "unknown", "ts": int(time.time())}
+                    )
+                    if fb:
+                        yield fb
+                await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.exception("SSE generator stopped: %s", e)
+            _metric_inc("sse_generator_fatal")
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":   "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection":       "keep-alive",
+        },
+    )
+
+@app.get("/api/live")
+def live_snapshot(symbols: str = ""):
+    """Snapshot of current live prices (non-streaming, for initial load)."""
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()] \
+           if symbols else DEFAULT_WATCHLIST
+    return {
+        "prices":  {s: _live[s] for s in syms if s in _live},
+        "market":  _market_status.get("session", "unknown"),
+        "ts":      int(time.time()),
+    }
+
+@app.get("/api/market-status")
+def market_status():
+    """Current US market session status."""
+    is_market_open()   # refresh cache if stale
+    return _market_status
+
+@app.get("/api/search")
+async def search_stocks(q: str = "", limit: int = 8):
+    """
+    Stock symbol autocomplete — proxies Yahoo Finance search API.
+    Returns symbol, name, exchange, type. No API key required.
+    Results cached 5 min (symbols don't change often).
+    User-Agent: set SMF_HTTP_USER_AGENT or default StockMirrorFish/… identifier.
+    """
+    if not q or len(q.strip()) < 1:
+        return {"results": []}
+    try:
+        limit = max(1, min(int(limit), 50))
+    except (TypeError, ValueError):
+        limit = 8
+    q = q.strip().upper()
+    cache_key = f"search:{q}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None, lambda: _yahoo_finance_search_fetch(q, limit)
+    )
+    if result.get("error"):
+        _metric_inc("search_proxy_failures")
+        return result
+    _metric_inc("search_proxy_successes")
+    cache_set(cache_key, result)
+    return result
+
+@app.get("/api/screener")
+async def screener(
+    sector: str = "",
+    min_score: float = -100,
+    max_rsi: float = 100,
+    min_rsi: float = 0,
+    sort: str = "score",
+    symbols: str = "",
+):
+    """
+    Returns watchlist data filtered + sorted for the screener panel.
+    Inject live prices from _live cache before returning.
+    """
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()] \
+           if symbols else DEFAULT_WATCHLIST
+    key = f"wl:{','.join(syms)}"
+    wl_data = cache_get(key)
+    if not wl_data:
+        # Trigger watchlist build if not cached
+        wl_data = watchlist(symbols=",".join(syms))
+
+    stocks = wl_data.get("watchlist", []) if isinstance(wl_data, dict) else []
+
+    # Inject live prices
+    for s in stocks:
+        sym = s.get("symbol", "")
+        live = _live.get(sym)
+        if live:
+            s["price"]      = live["price"]
+            s["change_pct"] = live["change_pct"]
+            s["change"]     = live["change"]
+            s["live"]       = True
+
+    # Filter
+    if sector:
+        stocks = [s for s in stocks if s.get("sector","").lower() == sector.lower()]
+    stocks = [s for s in stocks if s.get("score", 0) >= min_score]
+    t_stocks = []
+    for s in stocks:
+        rsi = s.get("rsi", 50)
+        if min_rsi <= rsi <= max_rsi:
+            t_stocks.append(s)
+    stocks = t_stocks
+
+    # Sort
+    sort_map = {
+        "score":   lambda s: s.get("score", 0),
+        "rsi":     lambda s: s.get("rsi", 50),
+        "vol":     lambda s: abs(s.get("volume_zscore", 0)),
+        "sortino": lambda s: s.get("sortino", 0),
+        "change":  lambda s: s.get("change_pct", 0),
+    }
+    stocks = sorted(stocks, key=sort_map.get(sort, sort_map["score"]), reverse=True)
+
+    return {
+        "stocks":  stocks,
+        "count":   len(stocks),
+        "market":  _market_status.get("session", "unknown"),
+        "filters": {"sector": sector, "min_score": min_score, "sort": sort},
+    }
 
 @app.get("/")
 def root():
     if os.path.exists("dashboard.html"):
         return FileResponse("dashboard.html")
-    return {"status":"Stock Mirror Fish v4 — Research Edition","docs":"/docs"}
+    return {"status":"Stock Mirror Fish v4.1 — Live Edition","docs":"/docs"}
 
 if __name__=="__main__":
     import uvicorn
-    print("\n"+"="*58)
-    print("  🐟  STOCK MIRROR FISH  v4  — Research Edition")
-    print("="*58)
+    print("\n"+"="*60)
+    print("  🐟  STOCK MIRROR FISH  v4.1  — Live Edition")
+    print("="*60)
     print(f"  📊  Dashboard  → http://localhost:8080")
     print(f"  📡  API Docs   → http://localhost:8080/docs")
+    print(f"  🔴  SSE Stream → http://localhost:8080/api/stream")
+    print(f"  🔍  Search     → http://localhost:8080/api/search?q=AAPL")
     print(f"  💊  Health     → http://localhost:8080/api/health")
     print(f"  🗺   Heatmap   → http://localhost:8080/api/heatmap")
     print(f"  📈  Tracking {len(DEFAULT_WATCHLIST)} stocks + {len(SECTOR_ETFS)} sector ETFs")
