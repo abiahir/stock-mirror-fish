@@ -478,6 +478,50 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
 .port-del:hover{background:rgba(255,68,102,.15);color:var(--red)}
 .port-empty{padding:16px 11px;text-align:center;font-size:10px;color:var(--text3);line-height:1.6}
 .port-no-price{color:var(--text3);font-size:9px}
+
+/* ─── Pattern Recognition Strip ─────────────── */
+#patterns-strip{
+  padding:6px 11px;display:flex;flex-wrap:wrap;gap:5px;
+  min-height:0;transition:all .2s;
+}
+#patterns-strip:empty{display:none}
+.pat-badge{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:3px 9px 3px 7px;border-radius:20px;
+  font-size:9px;font-weight:700;letter-spacing:.03em;
+  cursor:default;position:relative;white-space:nowrap;
+  transition:opacity .15s;
+}
+.pat-badge:hover{opacity:.85}
+.pat-badge .pat-dot{
+  width:5px;height:5px;border-radius:50%;flex-shrink:0;
+}
+.pat-badge.bullish{
+  background:rgba(0,255,136,.10);color:var(--green);
+  border:1px solid rgba(0,255,136,.22);
+}
+.pat-badge.bullish .pat-dot{background:var(--green)}
+.pat-badge.bearish{
+  background:rgba(255,68,102,.10);color:var(--red);
+  border:1px solid rgba(255,68,102,.22);
+}
+.pat-badge.bearish .pat-dot{background:var(--red)}
+.pat-badge.neutral{
+  background:rgba(255,170,0,.10);color:var(--yellow);
+  border:1px solid rgba(255,170,0,.22);
+}
+.pat-badge.neutral .pat-dot{background:var(--yellow)}
+/* tooltip */
+.pat-badge::after{
+  content:attr(data-desc);
+  display:none;position:absolute;bottom:calc(100% + 5px);left:0;
+  background:var(--bg3);border:1px solid var(--border2);border-radius:5px;
+  color:var(--text);font-size:9px;font-weight:400;
+  padding:5px 8px;min-width:160px;max-width:240px;
+  white-space:normal;line-height:1.4;z-index:200;
+  pointer-events:none;box-shadow:0 4px 14px rgba(0,0,0,.5);
+}
+.pat-badge:hover::after{display:block}
 </style>
 </head>
 <body>
@@ -566,6 +610,11 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
         </div>
       </div>
       <div id="chart-wrap"><canvas id="priceChart"></canvas></div>
+    </div>
+
+    <!-- Pattern Recognition strip -->
+    <div class="card" id="patterns-card" style="padding:0">
+      <div id="patterns-strip"></div>
     </div>
 
     <!-- 8-cell technicals grid -->
@@ -912,6 +961,7 @@ async function selectStock(sym) {
   renderDiscussion(analysis);
   renderChart(data);
   renderTechnicals(data);
+  renderPatterns(analysis?.patterns || []);
   renderKelly(analysis);
   updateStatus(data);
 }
@@ -1295,6 +1345,26 @@ function renderAllocation(stocks) {
 // ───────────────────────────────────────────────────────────
 //  News Feed
 // ───────────────────────────────────────────────────────────
+// ─── Pattern Recognition ──────────────────────────────────────────────────
+function renderPatterns(patterns) {
+  const strip = document.getElementById('patterns-strip');
+  const card  = document.getElementById('patterns-card');
+  if (!strip) return;
+  strip.innerHTML = '';
+  if (!patterns || patterns.length === 0) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = '';
+  patterns.forEach(p => {
+    const badge = document.createElement('span');
+    badge.className = `pat-badge ${p.type || 'neutral'}`;
+    badge.setAttribute('data-desc', p.desc || '');
+    badge.innerHTML = `<span class="pat-dot"></span>${p.name}`;
+    strip.appendChild(badge);
+  });
+}
+
 async function loadNews(sym) {
   const area = document.getElementById('news-area');
 

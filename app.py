@@ -662,12 +662,144 @@ def get_stock(symbol: str, period: str = "6mo"):
             "bb_upper":   bb_u,
             "bb_lower":   bb_l,
         }
+        result["patterns"] = detect_patterns(hist, result["technicals"], info)
         cache_set(key, result)
         return result
     except Exception as e:
         logger.exception("get_stock failed for %s", symbol)
         _metric_inc("get_stock_failures")
         return {"error": str(e), "symbol": symbol}
+
+# ─────────────────────────────────────────────
+#  Chart Pattern Recognition
+# ─────────────────────────────────────────────
+def detect_patterns(hist: pd.DataFrame, technicals: dict, info: dict) -> list:
+    """
+    Detect up to 6 actionable chart patterns from price history.
+    Each pattern: {name, type:'bullish'|'bearish'|'neutral', desc}
+    Pure math on existing data — no extra API calls.
+    """
+    patterns = []
+    try:
+        prices = hist["Close"]
+        opens  = hist["Open"]
+        n      = len(prices)
+        if n < 20:
+            return patterns
+
+        cur = float(prices.iloc[-1])
+
+        # ── Moving averages ──────────────────────────────────
+        ma20  = prices.rolling(20).mean()
+        ma50  = prices.rolling(50).mean() if n >= 50  else None
+        ma200 = prices.rolling(200).mean() if n >= 200 else None
+
+        # 1. Golden Cross — MA50 crossed above MA200 in last 10 bars
+        if ma50 is not None and ma200 is not None:
+            for i in range(2, min(11, n - 1)):
+                p50, p200 = float(ma50.iloc[-i-1]), float(ma200.iloc[-i-1])
+                c50, c200 = float(ma50.iloc[-i]),   float(ma200.iloc[-i])
+                if all(not math.isnan(v) for v in [p50, p200, c50, c200]):
+                    if p50 < p200 and c50 >= c200:
+                        patterns.append({"name": "Golden Cross", "type": "bullish",
+                            "desc": "MA50 crossed above MA200 — powerful long-term trend shift"})
+                        break
+
+        # 2. Death Cross — MA50 crossed below MA200 in last 10 bars
+        if ma50 is not None and ma200 is not None and not any(p["name"] == "Golden Cross" for p in patterns):
+            for i in range(2, min(11, n - 1)):
+                p50, p200 = float(ma50.iloc[-i-1]), float(ma200.iloc[-i-1])
+                c50, c200 = float(ma50.iloc[-i]),   float(ma200.iloc[-i])
+                if all(not math.isnan(v) for v in [p50, p200, c50, c200]):
+                    if p50 > p200 and c50 <= c200:
+                        patterns.append({"name": "Death Cross", "type": "bearish",
+                            "desc": "MA50 crossed below MA200 — long-term trend breakdown"})
+                        break
+
+        # 3. Volume Breakout / Climax
+        vz  = technicals.get("volume_zscore", 0) or 0
+        chg = float(prices.pct_change().iloc[-1]) if n > 1 else 0
+        if vz > 2.0 and chg > 0.005:
+            patterns.append({"name": "Volume Breakout", "type": "bullish",
+                "desc": f"Vol Z={vz:.1f}σ with price up — institutional accumulation signal"})
+        elif vz > 2.0 and chg < -0.005:
+            patterns.append({"name": "Volume Climax", "type": "bearish",
+                "desc": f"Vol Z={vz:.1f}σ with price down — distribution / selling climax"})
+
+        # 4. RSI extremes
+        rsi = technicals.get("rsi", 50) or 50
+        if rsi < 30:
+            patterns.append({"name": "RSI Oversold", "type": "bullish",
+                "desc": f"RSI {rsi:.0f} — extreme oversold, mean-reversion setup"})
+        elif rsi > 70:
+            patterns.append({"name": "RSI Overbought", "type": "bearish",
+                "desc": f"RSI {rsi:.0f} — extended momentum, watch for reversal"})
+
+        # 5. Bollinger Band Squeeze — bandwidth in bottom quintile
+        if n >= 30:
+            bb_std = prices.rolling(20).std()
+            bb_mid = prices.rolling(20).mean()
+            bw     = (bb_std * 4 / bb_mid).dropna()
+            if len(bw) >= 20:
+                cur_bw = float(bw.iloc[-1])
+                pct20  = float(bw.quantile(0.20))
+                if not math.isnan(cur_bw) and cur_bw < pct20:
+                    patterns.append({"name": "BB Squeeze", "type": "neutral",
+                        "desc": "Bollinger Bands compressed — volatility coiling, breakout imminent"})
+
+        # 6. Bullish Engulfing (last 2 candles)
+        if n >= 2 and len(opens) >= 2:
+            po, pc = float(opens.iloc[-2]), float(prices.iloc[-2])
+            co, cc = float(opens.iloc[-1]), float(prices.iloc[-1])
+            if pc < po and cc > co and co <= pc and cc >= po:
+                patterns.append({"name": "Bullish Engulfing", "type": "bullish",
+                    "desc": "Last candle body engulfs prior red — buyers overwhelmed sellers"})
+
+        # 7. Bearish Engulfing
+        if n >= 2 and len(opens) >= 2:
+            po, pc = float(opens.iloc[-2]), float(prices.iloc[-2])
+            co, cc = float(opens.iloc[-1]), float(prices.iloc[-1])
+            if pc > po and cc < co and co >= pc and cc <= po:
+                patterns.append({"name": "Bearish Engulfing", "type": "bearish",
+                    "desc": "Last candle body engulfs prior green — sellers overwhelmed buyers"})
+
+        # 8. Near 52-week high / low
+        w52h = safe_float(info.get("fiftyTwoWeekHigh"), 0)
+        w52l = safe_float(info.get("fiftyTwoWeekLow"), 0)
+        if w52h and w52h > 0 and abs(cur - w52h) / w52h < 0.03:
+            patterns.append({"name": "Near 52W High", "type": "bullish",
+                "desc": f"Within 3% of 52-week high ${w52h:.0f} — strong momentum"})
+        elif w52l and w52l > 0 and cur > 0 and abs(cur - w52l) / cur < 0.05:
+            patterns.append({"name": "Near 52W Low", "type": "neutral",
+                "desc": f"Within 5% of 52-week low ${w52l:.0f} — potential support reversal zone"})
+
+        # 9. Full MA ribbon alignment
+        if ma50 is not None:
+            m20 = float(ma20.iloc[-1])
+            m50 = float(ma50.iloc[-1])
+            if not math.isnan(m20) and not math.isnan(m50):
+                if ma200 is not None:
+                    m200 = float(ma200.iloc[-1])
+                    if not math.isnan(m200):
+                        if cur > m20 > m50 > m200:
+                            patterns.append({"name": "Bullish Ribbon", "type": "bullish",
+                                "desc": "Price > MA20 > MA50 > MA200 — full bullish trend alignment"})
+                        elif cur < m20 < m50 < m200:
+                            patterns.append({"name": "Bearish Ribbon", "type": "bearish",
+                                "desc": "Price < MA20 < MA50 < MA200 — full bearish trend alignment"})
+
+    except Exception as e:
+        logger.debug("detect_patterns error: %s", e)
+
+    # Deduplicate by name, cap at 6 for UI
+    seen, out = set(), []
+    for p in patterns:
+        if p["name"] not in seen:
+            seen.add(p["name"])
+            out.append(p)
+        if len(out) >= 6:
+            break
+    return out
 
 # ─────────────────────────────────────────────
 #  Agent Council (4 personas)
@@ -1020,6 +1152,7 @@ def analyze(symbol: str):
     result={"symbol":symbol.upper(),"company_name":d.get("company_name",symbol),
             "current_price":d.get("current_price"),"change_pct":d.get("change_pct"),
             "technicals":d.get("technicals",{}),"fundamentals":d.get("fundamentals",{}),
+            "patterns":d.get("patterns",[]),
             "agents":agents,"discussion":discussion,"levels":levels,
             "consensus":{"score":round(avg,1),"recommendation":ov,"color":oc,
                          "confidence":min(95,int(abs(avg)*0.8+30))}}
