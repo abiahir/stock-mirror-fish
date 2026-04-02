@@ -6,6 +6,7 @@ Run with: pytest tests/ -v
 import json
 import time
 import pytest
+from freezegun import freeze_time
 
 # ── Import only the pure utility symbols (no network, no yfinance at import time)
 import importlib, sys, types
@@ -36,12 +37,12 @@ class TestCache:
         smf.cache_set("k", {"x": 1})
         assert smf.cache_get("k") == {"x": 1}
 
-    def test_expired_returns_none(self, monkeypatch):
-        smf.cache_set("k2", "val")
-        # fake the timestamp to be older than TTL
-        with smf._lock:
-            smf._cache["k2"]["ts"] = time.time() - smf.CACHE_TTL - 1
-        assert smf.cache_get("k2") is None
+    def test_expired_returns_none(self):
+        with freeze_time("2026-01-01 12:00:00"):
+            smf.cache_set("k2", "val")
+        # Advance time well past TTL (300 s); entry must be treated as expired
+        with freeze_time("2026-01-01 13:00:00"):
+            assert smf.cache_get("k2") is None
 
     def test_clear_removes_all(self):
         smf.cache_set("a", 1)
@@ -138,10 +139,12 @@ class TestIsMarketOpen:
         result = smf.is_market_open()
         assert isinstance(result, bool)
 
-    def test_cache_staleness_threshold(self, monkeypatch):
-        """After forcing is_market_open(), a second call within 30s uses cache."""
-        smf.is_market_open()  # prime the cache
-        original_checked = smf._market_status["checked"]
-        # call again immediately — should NOT re-evaluate (checked changes only on refresh)
-        smf.is_market_open()
-        assert smf._market_status["checked"] == original_checked
+    def test_cache_staleness_threshold(self):
+        """Within the 30 s window, a second call reuses the cached result."""
+        with freeze_time("2026-01-01 12:00:00"):
+            smf.is_market_open()  # prime the cache
+            original_checked = smf._market_status["checked"]
+        # 15 s later — still inside the 30 s staleness window
+        with freeze_time("2026-01-01 12:00:15"):
+            smf.is_market_open()
+            assert smf._market_status["checked"] == original_checked
