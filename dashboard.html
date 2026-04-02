@@ -479,6 +479,33 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
 .port-empty{padding:16px 11px;text-align:center;font-size:10px;color:var(--text3);line-height:1.6}
 .port-no-price{color:var(--text3);font-size:9px}
 
+/* ─── Multi-TF Confluence ────────────────────── */
+#confluence-area{margin-bottom:2px}
+#confluence-area .card{margin-bottom:0}
+.cf-header{
+  display:flex;align-items:center;gap:8px;
+  padding:7px 11px;border-top:1px solid var(--border);
+}
+.cf-pct{font-size:17px;font-weight:700}
+.cf-chip{
+  font-size:9px;font-weight:700;padding:2px 9px;
+  border-radius:10px;white-space:nowrap;
+}
+.cf-chip.bull{background:rgba(0,255,136,.12);color:var(--green);border:1px solid rgba(0,255,136,.25)}
+.cf-chip.bear{background:rgba(255,68,102,.12);color:var(--red);border:1px solid rgba(255,68,102,.25)}
+.cf-chip.mixed{background:rgba(255,170,0,.12);color:var(--yellow);border:1px solid rgba(255,170,0,.25)}
+.cf-subtitle{font-size:9px;color:var(--text3);margin-left:auto;text-align:right;line-height:1.4}
+.cf-bars{
+  display:flex;gap:8px;padding:8px 11px 10px;
+  border-top:1px solid rgba(255,255,255,.04);
+}
+.cf-tf{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px}
+.cf-tf-lbl{font-size:8px;color:var(--text3);font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.cf-tf-track{width:100%;height:4px;background:var(--bg3);border-radius:2px;overflow:hidden}
+.cf-tf-fill{height:100%;border-radius:2px;transition:width .6s ease}
+.cf-tf-score{font-size:10px;font-weight:700}
+.cf-loading{padding:14px 11px;text-align:center;font-size:10px;color:var(--text3)}
+
 /* ─── Pattern Recognition Strip ─────────────── */
 #patterns-strip{
   padding:6px 11px;display:flex;flex-wrap:wrap;gap:5px;
@@ -590,6 +617,7 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
     <div id="agents-area">
       <div class="loading"><span class="spin"></span>Awaiting analysis…</div>
     </div>
+    <div id="confluence-area"></div>
     <div id="discussion-area"></div>
     <div id="news-area"></div>
   </div>
@@ -958,6 +986,7 @@ async function selectStock(sym) {
   S.curData = data;
   S.curAnalysis = analysis;
   renderAgents(analysis);
+  renderConfluence(analysis);
   renderDiscussion(analysis);
   renderChart(data);
   renderTechnicals(data);
@@ -1345,6 +1374,62 @@ function renderAllocation(stocks) {
 // ───────────────────────────────────────────────────────────
 //  News Feed
 // ───────────────────────────────────────────────────────────
+// ─── Multi-Timeframe Confluence ───────────────────────────────────────────
+function renderConfluence(analysis) {
+  const area = document.getElementById('confluence-area');
+  if (!area) return;
+  const cf = analysis?.confluence;
+  if (!cf) { area.innerHTML = ''; return; }
+
+  const label    = cf.label || 'Mixed';
+  const pct      = cf.pct  ?? 50;
+  const chipCls  = label.includes('Bull') ? 'bull' : label.includes('Bear') ? 'bear' : 'mixed';
+  const pctColor = label.includes('Bull') ? 'var(--green)'
+                 : label.includes('Bear') ? 'var(--red)' : 'var(--yellow)';
+
+  const agree = cf.bull > cf.bear ? cf.bull : cf.bear;
+  const total  = (cf.bull ?? 0) + (cf.bear ?? 0) + (cf.neutral ?? 0);
+  const subtxt = total > 0
+    ? `${agree}/${total} timeframes agree`
+    : 'Confluence across 1M · 3M · 1Y';
+
+  const scores = cf.scores || {};
+  const TFS = [
+    { key: '1M', full: '1 Month'  },
+    { key: '3M', full: '3 Month'  },
+    { key: '1Y', full: '1 Year'   },
+  ];
+
+  const barsHtml = TFS.map(tf => {
+    const score = scores[tf.key];
+    if (score === null || score === undefined)
+      return `<div class="cf-tf">
+        <div class="cf-tf-lbl">${tf.key}</div>
+        <div class="cf-tf-track"><div class="cf-tf-fill" style="width:50%;background:var(--text3)"></div></div>
+        <div class="cf-tf-score" style="color:var(--text3)">—</div>
+      </div>`;
+    // normalise -100..+100 → 0%..100% fill width
+    const norm = Math.min(100, Math.max(0, (score + 100) / 2));
+    const col  = score > 10 ? 'var(--green)' : score < -10 ? 'var(--red)' : 'var(--yellow)';
+    const sign = score >= 0 ? '+' : '';
+    return `<div class="cf-tf">
+      <div class="cf-tf-lbl">${tf.key}</div>
+      <div class="cf-tf-track"><div class="cf-tf-fill" style="width:${norm}%;background:${col}"></div></div>
+      <div class="cf-tf-score" style="color:${col}">${sign}${score.toFixed(0)}</div>
+    </div>`;
+  }).join('');
+
+  area.innerHTML = `<div class="card" style="margin-bottom:2px">
+    <div class="card-hdr"><span class="card-title">⏱ Timeframe Confluence</span></div>
+    <div class="cf-header">
+      <div class="cf-pct" style="color:${pctColor}">${pct}%</div>
+      <span class="cf-chip ${chipCls}">${label}</span>
+      <div class="cf-subtitle">${subtxt}<br>1M · 3M · 1Y</div>
+    </div>
+    <div class="cf-bars">${barsHtml}</div>
+  </div>`;
+}
+
 // ─── Pattern Recognition ──────────────────────────────────────────────────
 function renderPatterns(patterns) {
   const strip = document.getElementById('patterns-strip');

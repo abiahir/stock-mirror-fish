@@ -1128,6 +1128,22 @@ def api_stock(symbol: str, period: str = "6mo"):
     if "error" in d: return JSONResponse(d, status_code=404)
     return d
 
+# ─────────────────────────────────────────────
+#  Multi-Timeframe Confluence helper
+# ─────────────────────────────────────────────
+def _score_tf(sym: str, period: str):
+    """Run the 4-agent council on a single timeframe, return avg score or None."""
+    try:
+        d = get_stock(sym, period)
+        if "error" in d:
+            return None
+        agents = [agent_rex(d), agent_vera(d), agent_q(d), agent_wade(d)]
+        return round(sum(a["score"] for a in agents) / len(agents), 1)
+    except Exception as e:
+        logger.debug("_score_tf %s %s: %s", sym, period, e)
+        return None
+
+
 @app.get("/api/analyze/{symbol}")
 def analyze(symbol: str):
     key = f"ana:{symbol.upper()}"
@@ -1143,6 +1159,29 @@ def analyze(symbol: str):
     atr        = d.get("technicals",{}).get("atr")
     levels     = calc_levels(d, agents, atr)
 
+    # ── Multi-Timeframe Confluence ─────────────
+    with ThreadPoolExecutor(max_workers=3) as _tfe:
+        _f1 = _tfe.submit(_score_tf, symbol, "1mo")
+        _f3 = _tfe.submit(_score_tf, symbol, "3mo")
+        _fy = _tfe.submit(_score_tf, symbol, "1y")
+        _s1, _s3, _sy = _f1.result(), _f3.result(), _fy.result()
+    _tf_vals = [_s1, _s3, _sy]
+    _bull = sum(1 for s in _tf_vals if s is not None and s > 10)
+    _bear = sum(1 for s in _tf_vals if s is not None and s < -10)
+    _n    = sum(1 for s in _tf_vals if s is not None)
+    if   _n == 0:        _cf_pct, _cf_label = 50, "No Data"
+    elif _bull == _n:    _cf_pct, _cf_label = 100, "Full Bull"
+    elif _bear == _n:    _cf_pct, _cf_label = 100, "Full Bear"
+    elif _bull > _bear:  _cf_pct = round(_bull/_n*100); _cf_label = "Mostly Bull"
+    elif _bear > _bull:  _cf_pct = round(_bear/_n*100); _cf_label = "Mostly Bear"
+    else:                _cf_pct, _cf_label = 33, "Mixed"
+    confluence = {
+        "scores": {"1M": _s1, "3M": _s3, "1Y": _sy},
+        "bull": _bull, "bear": _bear,
+        "neutral": _n - _bull - _bear,
+        "pct": _cf_pct, "label": _cf_label
+    }
+
     if avg>50:   ov,oc="Strong Buy","#00ff88"
     elif avg>20: ov,oc="Buy","#44cc77"
     elif avg>-10:ov,oc="Hold","#ffaa00"
@@ -1153,6 +1192,7 @@ def analyze(symbol: str):
             "current_price":d.get("current_price"),"change_pct":d.get("change_pct"),
             "technicals":d.get("technicals",{}),"fundamentals":d.get("fundamentals",{}),
             "patterns":d.get("patterns",[]),
+            "confluence":confluence,
             "agents":agents,"discussion":discussion,"levels":levels,
             "consensus":{"score":round(avg,1),"recommendation":ov,"color":oc,
                          "confidence":min(95,int(abs(avg)*0.8+30))}}
