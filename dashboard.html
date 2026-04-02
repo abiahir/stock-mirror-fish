@@ -609,6 +609,7 @@ async function loadWatchlist() {
   renderChips(data.watchlist);
   renderPicksTable(data.watchlist);
   if (S.capital > 0) renderAllocation(data.watchlist); // sync, no await needed
+  startSSE(); // upgrade SSE subscription to full watchlist symbols
 }
 
 function renderChips(stocks) {
@@ -1109,9 +1110,11 @@ setInterval(() => {
 let _sse = null;
 let _lastPrices = {};
 
-function startSSE() {
+function startSSE(defaultSyms = '') {
   if (_sse) { _sse.close(); _sse = null; }
-  const syms = S.wlData.map(s => s.symbol).join(',') || S.symbol;
+  const syms = S.wlData.length > 0
+    ? S.wlData.map(s => s.symbol).join(',')
+    : (defaultSyms || S.symbol);
   _sse = new EventSource(`${BASE}/api/stream?symbols=${syms}`);
 
   _sse.onmessage = (e) => {
@@ -1366,21 +1369,18 @@ function updateScreenerRow(sym, d) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-//  Override chip rendering to add live dot + keep chip order
-// ═══════════════════════════════════════════════════════════
-const _origRenderChips = renderChips;
-// Patch: after chips render, start SSE
-const _origLoadWatchlist = loadWatchlist;
-
 // ───────────────────────────────────────────────────────────
-//  Init
+//  Init — progressive loading strategy
+//  1. SSE starts immediately with known symbols (no blank wait)
+//  2. Heatmap + first stock analysis paint fast (~2s)
+//  3. Watchlist loads in background — chips + picks appear when ready
 // ───────────────────────────────────────────────────────────
 async function init() {
-  await Promise.all([loadHeatmap(), loadWatchlist()]);
-  await selectStock(S.symbol);
-  startSSE();          // 🔴 SSE replaces the countdown timer for live data
-  startCountdown();    // keep as fallback UI for full data refresh
+  const DEFAULT_SYMS = 'AAPL,MSFT,NVDA,GOOGL,AMZN,META,JPM,V,TSLA,AMD,SPY,QQQ,NFLX,BAC,DIS';
+  startSSE(DEFAULT_SYMS);   // live prices flowing before anything else loads
+  startCountdown();
+  await Promise.all([loadHeatmap(), selectStock(S.symbol)]); // fast first paint
+  loadWatchlist(); // background — chips + council picks appear when ready
 }
 init();
 </script>
