@@ -310,6 +310,23 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
   width:5px;height:5px;border-radius:50%;background:var(--green);
   flex-shrink:0;animation:pulse 2s infinite;
 }
+
+/* ─── News Feed ─────────────────────────────── */
+.news-item{
+  display:block;padding:8px 11px;
+  border-bottom:1px solid rgba(255,255,255,.04);
+  text-decoration:none;transition:background .12s;cursor:pointer;
+}
+.news-item:last-child{border-bottom:none}
+.news-item:hover{background:rgba(255,255,255,.04)}
+.news-title{
+  font-size:10px;color:var(--text);line-height:1.45;
+  margin-bottom:3px;transition:color .12s;
+}
+.news-item:hover .news-title{color:var(--cyan)}
+.news-meta{font-size:8px;color:var(--text3);display:flex;gap:6px;align-items:center}
+.news-dot{width:2px;height:2px;border-radius:50%;background:var(--text3)}
+.news-empty{padding:12px 11px;font-size:10px;color:var(--text3);text-align:center}
 </style>
 </head>
 <body>
@@ -352,6 +369,7 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
       <div class="loading"><span class="spin"></span>Awaiting analysis…</div>
     </div>
     <div id="discussion-area"></div>
+    <div id="news-area"></div>
   </div>
 
   <!-- ── CENTER col ─────────── -->
@@ -655,6 +673,8 @@ async function selectStock(sym) {
   document.getElementById('agents-area').innerHTML =
     '<div class="loading"><span class="spin"></span>Analyzing…</div>';
   document.getElementById('discussion-area').innerHTML = '';
+
+  loadNews(sym); // fire-and-forget — loads independently, doesn't block chart/agents
 
   const [data, analysis] = await Promise.all([
     api(`/api/stock/${sym}?period=${S.period}`),
@@ -1052,6 +1072,62 @@ function renderAllocation(stocks) {
 }
 
 // ───────────────────────────────────────────────────────────
+//  News Feed
+// ───────────────────────────────────────────────────────────
+async function loadNews(sym) {
+  const area = document.getElementById('news-area');
+  // Show skeleton immediately
+  area.innerHTML = `<div class="card">
+    <div class="card-hdr">
+      <span class="card-title">📰 News</span>
+      <span style="font-size:9px;color:var(--text3)">${sym}</span>
+    </div>
+    <div class="loading" style="height:48px"><span class="spin"></span>Fetching headlines…</div>
+  </div>`;
+
+  const data = await api(`/api/news/${sym}`);
+
+  if (!data || !data.news || data.news.length === 0) {
+    area.innerHTML = `<div class="card">
+      <div class="card-hdr">
+        <span class="card-title">📰 News</span>
+        <span style="font-size:9px;color:var(--text3)">${sym}</span>
+      </div>
+      <div class="news-empty">No headlines found</div>
+    </div>`;
+    return;
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  function timeAgo(ts) {
+    if (!ts) return '';
+    const age = now - ts;
+    if (age < 60)    return 'just now';
+    if (age < 3600)  return Math.floor(age / 60) + 'm ago';
+    if (age < 86400) return Math.floor(age / 3600) + 'h ago';
+    return Math.floor(age / 86400) + 'd ago';
+  }
+
+  const items = data.news.map(n => `
+    <a class="news-item" href="${n.url}" target="_blank" rel="noopener noreferrer">
+      <div class="news-title">${n.title}</div>
+      <div class="news-meta">
+        <span>${n.source}</span>
+        <span class="news-dot"></span>
+        <span>${timeAgo(n.ts)}</span>
+      </div>
+    </a>`).join('');
+
+  area.innerHTML = `<div class="card">
+    <div class="card-hdr">
+      <span class="card-title">📰 News</span>
+      <span style="font-size:9px;color:var(--text3)">${sym} · ${data.count} headline${data.count !== 1 ? 's' : ''}</span>
+    </div>
+    <div id="news-list">${items}</div>
+  </div>`;
+}
+
+// ───────────────────────────────────────────────────────────
 //  Status Bar
 // ───────────────────────────────────────────────────────────
 function updateStatus(data) {
@@ -1386,13 +1462,4 @@ function updateScreenerRow(sym, d) {
 //  3. Watchlist loads in background — chips + picks appear when ready
 // ───────────────────────────────────────────────────────────
 async function init() {
-  const DEFAULT_SYMS = 'AAPL,MSFT,NVDA,GOOGL,AMZN,META,JPM,V,TSLA,AMD,SPY,QQQ,NFLX,BAC,DIS';
-  startSSE(DEFAULT_SYMS);   // live prices flowing before anything else loads
-  startCountdown();
-  await Promise.all([loadHeatmap(), selectStock(S.symbol)]); // fast first paint
-  loadWatchlist(); // background — chips + council picks appear when ready
-}
-init();
-</script>
-</body>
-</html>
+  c
