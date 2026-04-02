@@ -506,6 +506,64 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
 .cf-tf-score{font-size:10px;font-weight:700}
 .cf-loading{padding:14px 11px;text-align:center;font-size:10px;color:var(--text3)}
 
+/* ─── AI Chat ────────────────────────────────── */
+#chat-msgs{
+  max-height:240px;overflow-y:auto;padding:8px 11px;
+  display:flex;flex-direction:column;gap:6px;
+  scrollbar-width:thin;scrollbar-color:var(--border) transparent;
+}
+#chat-msgs:empty::before{
+  content:"Ask anything about the selected stock.";
+  color:var(--text3);font-size:10px;
+  display:block;text-align:center;padding:14px 0;
+}
+.chat-user,.chat-agent{display:flex;gap:7px;align-items:flex-start}
+.chat-user{align-self:flex-end;flex-direction:row-reverse;max-width:88%}
+.chat-agent{max-width:96%}
+.chat-bubble{
+  padding:7px 10px;border-radius:10px;
+  font-size:10px;line-height:1.5;word-break:break-word;
+}
+.chat-user .chat-bubble{
+  background:rgba(0,180,255,.13);border:1px solid rgba(0,180,255,.22);
+  color:var(--text);border-top-right-radius:3px;
+}
+.chat-agent .chat-bubble{
+  background:var(--bg2);border:1px solid var(--border);
+  color:var(--text);border-top-left-radius:3px;
+}
+.chat-avatar{font-size:14px;flex-shrink:0;margin-top:1px}
+.chat-agent-name{font-size:8px;font-weight:700;margin-bottom:2px}
+#chat-quick-wrap{
+  display:flex;flex-wrap:wrap;gap:4px;
+  padding:5px 11px;border-top:1px solid var(--border);
+}
+.chat-quick{
+  background:var(--bg3);border:1px solid var(--border2);
+  border-radius:10px;color:var(--text2);
+  font-family:var(--font);font-size:9px;
+  padding:3px 9px;cursor:pointer;transition:all .15s;white-space:nowrap;
+}
+.chat-quick:hover{background:var(--bg2);color:var(--text);border-color:var(--cyan)}
+#chat-input-row{
+  display:flex;gap:5px;padding:7px 11px;
+  border-top:1px solid var(--border);
+}
+#chat-input{
+  flex:1;background:var(--bg3);border:1px solid var(--border2);
+  border-radius:6px;color:var(--text);padding:6px 9px;
+  font-family:var(--font);font-size:10px;outline:none;
+}
+#chat-input:focus{border-color:var(--cyan)}
+#chat-send{
+  background:linear-gradient(135deg,var(--blue),var(--cyan));
+  border:none;border-radius:6px;color:#fff;
+  width:32px;cursor:pointer;font-size:16px;font-weight:700;
+  flex-shrink:0;transition:opacity .15s;
+}
+#chat-send:hover{opacity:.85}
+#chat-send:disabled{opacity:.35;cursor:default}
+
 /* ─── Pattern Recognition Strip ─────────────── */
 #patterns-strip{
   padding:6px 11px;display:flex;flex-wrap:wrap;gap:5px;
@@ -620,6 +678,27 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
     <div id="confluence-area"></div>
     <div id="discussion-area"></div>
     <div id="news-area"></div>
+
+    <!-- AI Chat Panel -->
+    <div class="card" id="chat-card">
+      <div class="card-hdr">
+        <span class="card-title">💬 Ask the Council</span>
+        <span id="chat-sym-lbl" style="font-size:9px;color:var(--text3)">select a stock first</span>
+      </div>
+      <div id="chat-msgs"></div>
+      <div id="chat-quick-wrap">
+        <button class="chat-quick" onclick="quickChat('Bull case?')">🐂 Bull</button>
+        <button class="chat-quick" onclick="quickChat('Bear risks?')">🐻 Bear</button>
+        <button class="chat-quick" onclick="quickChat('Technicals?')">📊 Technicals</button>
+        <button class="chat-quick" onclick="quickChat('Risk metrics?')">🛡 Risk</button>
+        <button class="chat-quick" onclick="quickChat('Summary')">🎙️ Summary</button>
+      </div>
+      <div id="chat-input-row">
+        <input id="chat-input" type="text" placeholder="Ask anything about this stock…"
+               onkeydown="if(event.key==='Enter')sendChat()" maxlength="200" />
+        <button id="chat-send" onclick="sendChat()">›</button>
+      </div>
+    </div>
   </div>
 
   <!-- ── CENTER col ─────────── -->
@@ -967,6 +1046,8 @@ async function selectStock(sym) {
   document.querySelectorAll('.chip').forEach(c =>
     c.classList.toggle('active', c.dataset.sym === sym));
   document.getElementById('chart-title').textContent = `${sym} · Price Chart`;
+  const _csl = document.getElementById('chat-sym-lbl');
+  if (_csl) _csl.textContent = sym;
   document.getElementById('kelly-sym').textContent = sym;
   document.getElementById('agents-area').innerHTML =
     '<div class="loading"><span class="spin"></span>Analyzing…</div>';
@@ -1374,6 +1455,82 @@ function renderAllocation(stocks) {
 // ───────────────────────────────────────────────────────────
 //  News Feed
 // ───────────────────────────────────────────────────────────
+// ─── AI Chat ──────────────────────────────────────────────────────────────
+S.chatHistory = [];
+
+function _md(txt) {
+  return (txt || '')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\n/g, '<br>');
+}
+
+function appendChatMsg(role, text, meta={}) {
+  const msgs = document.getElementById('chat-msgs');
+  if (!msgs) return;
+  const div = document.createElement('div');
+  if (role === 'user') {
+    div.className = 'chat-user';
+    div.innerHTML = `<div class="chat-bubble">${_md(text)}</div>`;
+  } else {
+    const col = meta.color || '#4488ff';
+    div.className = 'chat-agent';
+    div.innerHTML = `<div class="chat-avatar">${meta.emoji || '🎙️'}</div>
+      <div>
+        <div class="chat-agent-name" style="color:${col}">${meta.agent || 'Council'}</div>
+        <div class="chat-bubble">${_md(text)}</div>
+      </div>`;
+  }
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+async function sendChat() {
+  const inp  = document.getElementById('chat-input');
+  const send = document.getElementById('chat-send');
+  const q    = (inp?.value || '').trim();
+  if (!q || !S.symbol) { inp?.focus(); return; }
+  if (send) send.disabled = true;
+  inp.value = '';
+  appendChatMsg('user', q);
+
+  const msgs = document.getElementById('chat-msgs');
+  const typing = document.createElement('div');
+  typing.id = 'chat-typing';
+  typing.className = 'chat-agent';
+  typing.innerHTML = `<div class="chat-avatar">💭</div>
+    <div class="chat-bubble" style="color:var(--text3)">Thinking…</div>`;
+  msgs?.appendChild(typing);
+  msgs?.scrollTo({top: msgs.scrollHeight, behavior:'smooth'});
+
+  try {
+    const res  = await fetch('/api/chat', {
+      method:  'POST',
+      headers: {'Content-Type':'application/json'},
+      body:    JSON.stringify({symbol: S.symbol, question: q})
+    });
+    const data = await res.json();
+    document.getElementById('chat-typing')?.remove();
+    if (data.response) {
+      appendChatMsg('agent', data.response, {agent: data.agent, emoji: data.emoji, color: data.color});
+      S.chatHistory.push({role:'user', text: q});
+      S.chatHistory.push({role:'agent', ...data});
+    }
+  } catch(e) {
+    document.getElementById('chat-typing')?.remove();
+    appendChatMsg('agent', 'Connection error — is the server running?',
+      {agent:'System', emoji:'⚠️', color:'var(--red)'});
+  } finally {
+    if (send) send.disabled = false;
+    inp?.focus();
+  }
+}
+
+function quickChat(q) {
+  const inp = document.getElementById('chat-input');
+  if (inp) inp.value = q;
+  sendChat();
+}
+
 // ─── Multi-Timeframe Confluence ───────────────────────────────────────────
 function renderConfluence(analysis) {
   const area = document.getElementById('confluence-area');

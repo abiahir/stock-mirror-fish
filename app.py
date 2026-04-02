@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
 from datetime import datetime, time as dtime, timezone
-import asyncio, json, logging, math, os, time, threading
+import asyncio, json, logging, math, os, re, time, threading
 import urllib.error
 import urllib.request, urllib.parse
 import xml.etree.ElementTree as ET_xml
@@ -1198,6 +1198,159 @@ def analyze(symbol: str):
                          "confidence":min(95,int(abs(avg)*0.8+30))}}
     cache_set(key, result)
     return result
+
+# ─────────────────────────────────────────────
+#  AI Chat — Ask the Council
+# ─────────────────────────────────────────────
+@app.post("/api/chat")
+async def chat(req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    symbol   = str(body.get("symbol", "")).upper().strip()
+    question = str(body.get("question", "")).strip()
+    if not symbol or not question:
+        return JSONResponse({"error": "symbol and question required"}, status_code=400)
+
+    ana = analyze(symbol)
+    if isinstance(ana, JSONResponse):
+        return {"agent": "Council", "emoji": "🎙️", "color": "#4488ff",
+                "response": f"I couldn't load data for **{symbol}**. Try selecting it from the watchlist first."}
+
+    q      = question.lower()
+    agents = ana.get("agents", [])
+    tech   = ana.get("technicals", {})
+    fund   = ana.get("fundamentals", {})
+    con    = ana.get("consensus", {})
+    pats   = ana.get("patterns", [])
+    cf     = ana.get("confluence", {})
+    price  = ana.get("current_price") or 0
+    chg    = ana.get("change_pct") or 0
+    name   = ana.get("company_name", symbol)
+
+    def _ag(idx):
+        return agents[idx] if len(agents) > idx else {}
+    rex, vera, qant, wade = _ag(0), _ag(1), _ag(2), _ag(3)
+
+    def _mc(v):
+        if not v: return "N/A"
+        if v >= 1e12: return f"${v/1e12:.2f}T"
+        if v >= 1e9:  return f"${v/1e9:.1f}B"
+        return f"${v/1e6:.0f}M"
+
+    # ── Compare intent ───────────────────────────────────────────────
+    cmp_m = re.search(r'\b([A-Z]{1,5})\s+(?:vs\.?|versus|and)\s+([A-Z]{1,5})\b', question.upper())
+    if cmp_m or any(w in q for w in ["compare ", " vs ", "versus "]):
+        if cmp_m:
+            sym1_cmp, sym2_cmp = cmp_m.group(1), cmp_m.group(2)
+            # If one of the symbols matches the current page, use the current analysis;
+            # otherwise fetch both independently.
+            if sym1_cmp == symbol:
+                ana1_cmp, ana2_cmp = data, analyze(sym2_cmp)
+                label1, label2 = symbol, sym2_cmp
+            elif sym2_cmp == symbol:
+                ana1_cmp, ana2_cmp = data, analyze(sym1_cmp)
+                label1, label2 = symbol, sym1_cmp
+            else:
+                ana1_cmp, ana2_cmp = analyze(sym1_cmp), analyze(sym2_cmp)
+                label1, label2 = sym1_cmp, sym2_cmp
+            if not isinstance(ana2_cmp, JSONResponse) and not isinstance(ana1_cmp, JSONResponse):
+                con1   = ana1_cmp.get("consensus", {})
+                con2   = ana2_cmp.get("consensus", {})
+                score1 = con1.get("score", 0)
+                score2 = con2.get("score", 0)
+                rec1   = con1.get("recommendation", "?")
+                rec2   = con2.get("recommendation", "?")
+                winner = label1 if score1 >= score2 else label2
+                diff   = abs(score1 - score2)
+                both_b = score1 > 10 and score2 > 10
+                both_d = score1 < -10 and score2 < -10
+                verdict = ("Both bullish!" if both_b else "Both weak." if both_d
+                           else f"Council prefers **{winner}** by {diff:.0f} pts.")
+                return {"agent": "Council", "emoji": "🎙️", "color": "#4488ff",
+                        "response": f"**{label1}** {score1:+.0f} ({rec1}) vs **{label2}** {score2:+.0f} ({rec2}). {verdict}"}
+
+    # ── Bull / momentum → Rex ────────────────────────────────────────
+    if any(w in q for w in ["bull", "buy", "upside", "momentum", "breakout", "bullish", "going up", "why up", "rocket", "long "]):
+        pts  = rex.get("key_points", [])
+        sc   = rex.get("score", 0)
+        txt  = f"🐂 **Rex** (score {sc:+.0f}) — {rex.get('recommendation','')} on {symbol}. "
+        txt += "Bull case: " + " · ".join(pts[:3]) if pts else "No strong bull signal right now."
+        return {"agent": "Rex", "emoji": "🐂", "color": rex.get("color","#ff6644"), "response": txt}
+
+    # ── Bear / risk → Vera ───────────────────────────────────────────
+    if any(w in q for w in ["bear", "sell", "risk", "bearish", "downside", "concern", "short ", "going down", "why down", "drop", "danger"]):
+        pts  = vera.get("key_points", [])
+        sc   = vera.get("score", 0)
+        txt  = f"🐻 **Vera** (score {sc:+.0f}) — {vera.get('recommendation','')} on {symbol}. "
+        txt += "Bear case: " + " · ".join(pts[:3]) if pts else "No major red flags detected."
+        return {"agent": "Vera", "emoji": "🐻", "color": vera.get("color","#4488ff"), "response": txt}
+
+    # ── Fundamental / valuation → Q ─────────────────────────────────
+    if any(w in q for w in ["fundamental", "value", "pe ratio", "p/e", "revenue", "debt", "profit", "margin", "valuation", "cheap", "expensive", "overvalued", "undervalued", "quant", "cash flow", "balance"]):
+        pe   = fund.get("pe_ratio")
+        pb   = fund.get("pb_ratio")
+        pts  = qant.get("key_points", [])
+        sc   = qant.get("score", 0)
+        txt  = (f"📐 **Q** (score {sc:+.0f}) — {name}: P/E {pe or 'N/A'}, "
+                f"P/B {pb or 'N/A'}, Cap {_mc(fund.get('market_cap'))}. ")
+        txt += " · ".join(pts[:3]) if pts else "Insufficient fundamental data."
+        return {"agent": "Q", "emoji": "📐", "color": qant.get("color","#44ff88"), "response": txt}
+
+    # ── Risk-adjusted → Wade ─────────────────────────────────────────
+    if any(w in q for w in ["safe", "volatility", "sharpe", "sortino", "hedge", "drawdown", "calmar", "risk-adjust", "atr", "defensive", "protect", "steady", "risk metric"]):
+        sharpe  = tech.get("sharpe_ratio")
+        sortino = tech.get("sortino_ratio")
+        vol     = tech.get("volatility_annual")
+        pts     = wade.get("key_points", [])
+        sc      = wade.get("score", 0)
+        vol_s   = f"{vol*100:.1f}%" if vol else "N/A"
+        txt     = (f"🛡 **Wade** (score {sc:+.0f}) — {symbol}: vol {vol_s}, "
+                   f"Sharpe {f'{sharpe:.2f}' if sharpe else 'N/A'}, "
+                   f"Sortino {f'{sortino:.2f}' if sortino else 'N/A'}. ")
+        txt += " · ".join(pts[:3]) if pts else "Risk data unavailable."
+        return {"agent": "Wade", "emoji": "🛡", "color": wade.get("color","#ffaa00"), "response": txt}
+
+    # ── Technical / chart intent ─────────────────────────────────────
+    if any(w in q for w in ["pattern", "chart", "technical", "rsi", "macd", "bollinger", "volume", "indicator", "signal", "moving average", "ma20", "ma50"]):
+        rsi  = tech.get("rsi", 50)
+        macd = tech.get("macd", {})
+        vz   = tech.get("volume_zscore", 0)
+        pat_s = ", ".join(p["name"] for p in pats) if pats else "none"
+        txt   = (f"📊 **Technicals for {symbol}:** RSI {rsi:.0f} "
+                 f"({'oversold' if rsi<30 else 'overbought' if rsi>70 else 'neutral'}), "
+                 f"MACD {macd.get('trend','?')}, Vol Z {vz:.1f}. Patterns: {pat_s}.")
+        if cf.get("label"):
+            txt += f" Confluence: {cf.get('pct')}% — {cf['label']}."
+        return {"agent": "Council", "emoji": "📊", "color": "#4488ff", "response": txt}
+
+    # ── Confluence / timeframe intent ────────────────────────────────
+    if any(w in q for w in ["confluence", "timeframe", "weekly", "monthly", "long term", "short term"]):
+        scores = cf.get("scores", {})
+        s1m, s3m, s1y = scores.get("1M"), scores.get("3M"), scores.get("1Y")
+        fmt = lambda v: f"{v:+.0f}" if v is not None else "?"
+        aligned = cf.get("pct", 0)
+        note = ("Strong aligned signal." if aligned >= 100
+                else "Moderate — size accordingly." if aligned >= 67
+                else "Timeframes conflict — reduce size.")
+        txt = (f"⏱ **Confluence for {symbol}:** 1M {fmt(s1m)} · 3M {fmt(s3m)} · 1Y {fmt(s1y)}. "
+               f"**{aligned}% — {cf.get('label','Mixed')}**. {note}")
+        return {"agent": "Council", "emoji": "⏱", "color": "#4488ff", "response": txt}
+
+    # ── Default: council summary ─────────────────────────────────────
+    sc      = con.get("score", 0)
+    rec     = con.get("recommendation", "Hold")
+    cfid    = con.get("confidence", 50)
+    chg_s   = f"{'+' if chg>=0 else ''}{chg:.2f}%"
+    pat_s   = ", ".join(p["name"] for p in pats[:2]) if pats else "none"
+    txt = (f"🎙️ **{name} ({symbol}):** ${price:.2f} ({chg_s} today). "
+           f"Consensus: **{rec}** (score {sc:+.0f}, confidence {cfid}%). "
+           f"Patterns: {pat_s}. Confluence: {cf.get('pct','?')}% — {cf.get('label','Mixed')}. "
+           f"Try asking: 'bull case', 'bear risks', 'technicals', 'risk metrics', or compare with another ticker!")
+    return {"agent": "Council", "emoji": "🎙️", "color": "#4488ff", "response": txt}
+
 
 def _wl_item(sym):
     try:
