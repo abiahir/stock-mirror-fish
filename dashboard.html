@@ -1117,12 +1117,10 @@ function startSSE(defaultSyms = '') {
       ? S.wlData.map(s => s.symbol)
       : (defaultSyms || S.symbol).split(',')
   );
-  // Skip reconnect if already subscribed to every wanted symbol
+  // Skip reconnect if already subscribed to exactly the wanted symbols
   if (_sse && _sse.readyState !== EventSource.CLOSED && _sseSyms) {
     const current = new Set(_sseSyms.split(','));
-    if ([...wanted].every(s => current.has(s))) return;
-    // Reconnect with union so we don't drop existing subscriptions
-    current.forEach(s => wanted.add(s));
+    if (wanted.size === current.size && [...wanted].every(s => current.has(s))) return;
   }
   const syms = [...wanted].join(',');
   if (_sse) { _sse.close(); _sse = null; }

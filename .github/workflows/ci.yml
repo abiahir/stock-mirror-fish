@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, Feature-fix-bugs]
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -28,9 +28,7 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Lint (ruff)
-        run: |
-          pip install ruff
-          ruff check app.py
+        run: ruff check .
 
       - name: Run tests
         run: pytest tests/ -v --tb=short
