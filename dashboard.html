@@ -428,6 +428,56 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
 .earn-pill.upcoming{background:rgba(68,136,255,.12);color:var(--blue);border:1px solid rgba(68,136,255,.25)}
 .earn-eps{font-size:8px;color:var(--text3);text-align:right;white-space:nowrap}
 .earn-empty{padding:14px 11px;text-align:center;font-size:10px;color:var(--text3)}
+
+/* ─── Portfolio P&L Tracker ─────────────────── */
+#port-form-inner{
+  display:flex;flex-wrap:wrap;gap:5px;padding:8px 11px;
+  background:var(--bg3);border-bottom:1px solid var(--border);
+}
+.pf-input{
+  flex:1;min-width:60px;background:var(--bg);border:1px solid var(--border2);
+  border-radius:5px;color:var(--text);padding:5px 7px;
+  font-family:var(--font);font-size:11px;outline:none;
+}
+.pf-input:focus{border-color:var(--cyan)}
+.pf-btn{
+  background:linear-gradient(135deg,var(--blue),var(--cyan));border:none;
+  border-radius:5px;color:#fff;padding:5px 12px;cursor:pointer;
+  font-family:var(--font);font-size:11px;font-weight:700;white-space:nowrap;
+}
+.pf-btn:hover{opacity:.85}
+#port-summary{
+  display:flex;align-items:center;gap:10px;
+  padding:7px 11px;background:var(--bg3);
+  border-bottom:1px solid var(--border);
+}
+.port-total-val{font-size:14px;font-weight:700;color:var(--text)}
+.port-total-pnl{font-size:11px;font-weight:700}
+.port-total-pnl.up{color:var(--green)}.port-total-pnl.dn{color:var(--red)}
+.port-stat{font-size:9px;color:var(--text3);margin-left:auto;text-align:right;line-height:1.4}
+.port-row{
+  display:flex;align-items:center;gap:6px;
+  padding:6px 11px;border-bottom:1px solid rgba(255,255,255,.04);
+  font-size:10px;transition:background .1s;
+}
+.port-row:last-child{border-bottom:none}
+.port-row:hover{background:rgba(255,255,255,.03)}
+.port-sym{font-weight:700;color:var(--cyan);min-width:40px;cursor:pointer}
+.port-sym:hover{color:#fff}
+.port-qty{color:var(--text3);font-size:9px;min-width:38px}
+.port-cur{font-weight:700;color:var(--text);min-width:54px}
+.port-pnl{font-size:9px;font-weight:700;min-width:60px;text-align:right}
+.port-pnl.up{color:var(--green)}.port-pnl.dn{color:var(--red)}
+.port-pct{font-size:9px;min-width:46px;text-align:right}
+.port-pct.up{color:var(--green)}.port-pct.dn{color:var(--red)}
+.port-del{
+  background:none;border:none;color:var(--text3);cursor:pointer;
+  font-size:10px;padding:1px 4px;border-radius:3px;margin-left:auto;flex-shrink:0;
+  transition:all .1s;
+}
+.port-del:hover{background:rgba(255,68,102,.15);color:var(--red)}
+.port-empty{padding:16px 11px;text-align:center;font-size:10px;color:var(--text3);line-height:1.6}
+.port-no-price{color:var(--text3);font-size:9px}
 </style>
 </head>
 <body>
@@ -565,6 +615,38 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
       </div>
       <div id="earnings-body">
         <div class="loading" style="height:44px"><span class="spin"></span>Loading earnings…</div>
+      </div>
+    </div>
+
+    <!-- Portfolio P&L Tracker -->
+    <div class="card">
+      <div class="card-hdr">
+        <span class="card-title">💼 My Portfolio</span>
+        <span id="port-count" style="font-size:9px;color:var(--text3)"></span>
+        <button class="hbtn" onclick="togglePortForm()"
+          style="font-size:9px;padding:2px 8px;margin-left:auto">+ Add</button>
+      </div>
+      <!-- Add position form (hidden by default) -->
+      <div id="port-form" class="hidden">
+        <div id="port-form-inner">
+          <input class="pf-input" id="pf-sym"   placeholder="Symbol"    maxlength="10" style="max-width:72px"/>
+          <input class="pf-input" id="pf-qty"   type="number" placeholder="Shares"   min="0.001" step="any"/>
+          <input class="pf-input" id="pf-price" type="number" placeholder="Buy $"    min="0"     step="0.01"/>
+          <button class="pf-btn" onclick="addPosition()">Add</button>
+        </div>
+      </div>
+      <!-- Summary bar (shown only when positions exist) -->
+      <div id="port-summary" class="hidden">
+        <div>
+          <div class="port-total-val" id="port-total-val">$0.00</div>
+          <div style="font-size:8px;color:var(--text3)">Current Value</div>
+        </div>
+        <div class="port-total-pnl" id="port-total-pnl"></div>
+        <div class="port-stat" id="port-stat"></div>
+      </div>
+      <!-- Position rows -->
+      <div id="port-body">
+        <div class="port-empty">No positions yet.<br>Click <strong>+ Add</strong> to start tracking real P&amp;L.</div>
       </div>
     </div>
 
@@ -1307,6 +1389,144 @@ async function loadNews(sym) {
   area.appendChild(card);
 }
 
+// ═══════════════════════════════════════════════════════════
+//  PORTFOLIO P&L TRACKER
+// ═══════════════════════════════════════════════════════════
+S.portfolio = [];  // [{id, sym, qty, buyPrice}]
+
+// ── Persistence ─────────────────────────────────────────────
+function _savePortfolio() {
+  try { localStorage.setItem('smf_portfolio', JSON.stringify(S.portfolio)); } catch {}
+}
+function _loadPortfolio() {
+  try { S.portfolio = JSON.parse(localStorage.getItem('smf_portfolio') || '[]'); } catch { S.portfolio = []; }
+  _renderPortfolio();
+}
+
+// ── Get best available current price ────────────────────────
+function _getLivePrice(sym) {
+  if (_lastPrices[sym])                           return _lastPrices[sym].price;
+  const wl = S.wlData.find(s => s.symbol === sym);
+  if (wl && wl.price)                             return wl.price;
+  return null;
+}
+
+// ── Form toggle ──────────────────────────────────────────────
+function togglePortForm() {
+  const form = document.getElementById('port-form');
+  const isHidden = form.classList.toggle('hidden');
+  if (!isHidden) {
+    // Pre-fill symbol with current stock
+    document.getElementById('pf-sym').value = S.symbol;
+    const live = _getLivePrice(S.symbol);
+    document.getElementById('pf-price').value = live ? live.toFixed(2) : '';
+    document.getElementById('pf-qty').value = '';
+    document.getElementById('pf-sym').focus();
+  }
+}
+
+// ── Add position ─────────────────────────────────────────────
+function addPosition() {
+  const sym      = document.getElementById('pf-sym').value.trim().toUpperCase();
+  const qty      = parseFloat(document.getElementById('pf-qty').value);
+  const buyPrice = parseFloat(document.getElementById('pf-price').value);
+
+  if (!sym || isNaN(qty) || qty <= 0 || isNaN(buyPrice) || buyPrice <= 0) {
+    showToast('⚠️ Enter symbol, shares and buy price');
+    return;
+  }
+  S.portfolio.push({ id: Date.now(), sym, qty, buyPrice });
+  _savePortfolio();
+  _renderPortfolio();
+  document.getElementById('port-form').classList.add('hidden');
+  showToast(`💼 Added ${qty} × ${sym} @ $${buyPrice.toFixed(2)}`);
+}
+
+// ── Remove position ──────────────────────────────────────────
+function removePosition(id) {
+  S.portfolio = S.portfolio.filter(p => p.id !== id);
+  _savePortfolio();
+  _renderPortfolio();
+}
+
+// ── Render ───────────────────────────────────────────────────
+function _renderPortfolio() {
+  const body    = document.getElementById('port-body');
+  const summary = document.getElementById('port-summary');
+  const countEl = document.getElementById('port-count');
+  if (!body) return;
+
+  const positions = S.portfolio;
+  countEl.textContent = positions.length > 0 ? `${positions.length} position${positions.length > 1 ? 's' : ''}` : '';
+
+  if (positions.length === 0) {
+    summary.classList.add('hidden');
+    body.innerHTML = '<div class="port-empty">No positions yet.<br>Click <strong>+ Add</strong> to start tracking real P&amp;L.</div>';
+    return;
+  }
+
+  // Calculate per-position P&L
+  let totalValue = 0, totalCost = 0, priced = 0;
+  let bestSym = null, bestPct = -Infinity;
+  let worstSym = null, worstPct = Infinity;
+
+  const rows = positions.map(p => {
+    const cur  = _getLivePrice(p.sym);
+    const cost = p.qty * p.buyPrice;
+
+    if (cur !== null) {
+      const val  = p.qty * cur;
+      const pnl  = val - cost;
+      const pct  = (pnl / cost) * 100;
+      totalValue += val;
+      totalCost  += cost;
+      priced++;
+      if (pct > bestPct)  { bestPct  = pct;  bestSym  = p.sym; }
+      if (pct < worstPct) { worstPct = pct;  worstSym = p.sym; }
+      const up = pnl >= 0;
+      return `<div class="port-row">
+        <span class="port-sym" onclick="selectStock('${p.sym}')">${p.sym}</span>
+        <span class="port-qty">${p.qty}sh</span>
+        <span class="port-cur">$${cur.toFixed(2)}</span>
+        <span class="port-pnl ${up?'up':'dn'}">${up?'+':''}$${Math.abs(pnl).toFixed(0)}</span>
+        <span class="port-pct ${up?'up':'dn'}">${up?'+':''}${pct.toFixed(1)}%</span>
+        <button class="port-del" onclick="removePosition(${p.id})" title="Remove">✕</button>
+      </div>`;
+    } else {
+      // Price not yet available — show cost basis only
+      totalCost += cost;
+      return `<div class="port-row">
+        <span class="port-sym" onclick="selectStock('${p.sym}')">${p.sym}</span>
+        <span class="port-qty">${p.qty}sh</span>
+        <span class="port-cur port-no-price">loading…</span>
+        <span class="port-pnl port-no-price">—</span>
+        <span class="port-pct port-no-price">—</span>
+        <button class="port-del" onclick="removePosition(${p.id})" title="Remove">✕</button>
+      </div>`;
+    }
+  });
+
+  body.innerHTML = rows.join('');
+
+  // Summary bar
+  if (priced > 0) {
+    const totalPnl    = totalValue - totalCost;
+    const totalPnlPct = (totalPnl / totalCost) * 100;
+    const up          = totalPnl >= 0;
+    document.getElementById('port-total-val').textContent = '$' + totalValue.toFixed(2);
+    const pnlEl = document.getElementById('port-total-pnl');
+    pnlEl.textContent  = `${up?'+':''}$${Math.abs(totalPnl).toFixed(2)} (${up?'+':''}${totalPnlPct.toFixed(1)}%)`;
+    pnlEl.className    = 'port-total-pnl ' + (up ? 'up' : 'dn');
+    const statParts = [];
+    if (bestSym)  statParts.push(`🏆 ${bestSym} +${bestPct.toFixed(1)}%`);
+    if (worstSym && worstSym !== bestSym) statParts.push(`📉 ${worstSym} ${worstPct.toFixed(1)}%`);
+    document.getElementById('port-stat').innerHTML = statParts.join('<br>');
+    summary.classList.remove('hidden');
+  } else {
+    summary.classList.add('hidden');
+  }
+}
+
 // ───────────────────────────────────────────────────────────
 //  Earnings Calendar
 // ───────────────────────────────────────────────────────────
@@ -1634,6 +1854,10 @@ function applyLivePrices(prices) {
     }
     _lastPrices[sym] = d;
   });
+
+  // ── Re-render portfolio if any held symbol was updated ──
+  const _portSyms = new Set(S.portfolio.map(p => p.sym));
+  if (Object.keys(prices).some(s => _portSyms.has(s))) _renderPortfolio();
 }
 
 function updateMarketPill(session) {
@@ -1835,7 +2059,8 @@ function updateScreenerRow(sym, d) {
 //  3. Watchlist loads in background — chips + picks appear when ready
 // ───────────────────────────────────────────────────────────
 async function init() {
-  _loadAlerts();  // restore saved alerts from localStorage
+  _loadAlerts();     // restore saved alerts from localStorage
+  _loadPortfolio();  // restore saved positions from localStorage
   const DEFAULT_SYMS = 'AAPL,MSFT,NVDA,GOOGL,AMZN,META,JPM,V,TSLA,AMD,SPY,QQQ,NFLX,BAC,DIS';
   startSSE(DEFAULT_SYMS);   // live prices flowing before anything else loads
   startCountdown();
