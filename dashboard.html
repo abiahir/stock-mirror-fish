@@ -327,6 +327,107 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
 .news-meta{font-size:8px;color:var(--text3);display:flex;gap:6px;align-items:center}
 .news-dot{width:2px;height:2px;border-radius:50%;background:var(--text3)}
 .news-empty{padding:12px 11px;font-size:10px;color:var(--text3);text-align:center}
+
+/* ─── Price Alerts ──────────────────────────── */
+#alert-btn-wrap{position:relative;display:inline-flex}
+#alert-badge{
+  position:absolute;top:-5px;right:-6px;min-width:14px;height:14px;
+  background:var(--red);border-radius:7px;font-size:8px;font-weight:700;
+  color:#fff;display:none;align-items:center;justify-content:center;
+  padding:0 3px;border:1px solid var(--bg2);pointer-events:none;
+}
+#alert-panel{
+  position:absolute;top:calc(100% + 8px);right:0;width:300px;
+  background:var(--bg2);border:1px solid var(--border2);border-radius:10px;
+  box-shadow:0 12px 40px rgba(0,0,0,.6);z-index:200;
+  display:none;flex-direction:column;overflow:hidden;
+}
+#alert-panel.open{display:flex}
+#alert-panel-hdr{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:9px 12px;background:var(--bg3);border-bottom:1px solid var(--border);
+}
+#alert-panel-title{font-size:11px;font-weight:700;color:var(--text)}
+#alert-panel-close{
+  background:none;border:none;color:var(--text3);cursor:pointer;
+  font-size:13px;line-height:1;padding:0 2px;
+}
+#alert-panel-close:hover{color:var(--red)}
+#alert-list{max-height:180px;overflow-y:auto}
+.alert-row{
+  display:flex;align-items:center;gap:8px;padding:7px 12px;
+  border-bottom:1px solid rgba(255,255,255,.04);font-size:10px;
+}
+.alert-row:last-child{border-bottom:none}
+.alert-dir-up{color:var(--green);font-weight:700}
+.alert-dir-dn{color:var(--red);font-weight:700}
+.alert-del{
+  background:none;border:none;color:var(--text3);cursor:pointer;
+  font-size:11px;margin-left:auto;padding:1px 4px;border-radius:3px;
+  transition:all .1s;flex-shrink:0;
+}
+.alert-del:hover{background:rgba(255,68,102,.15);color:var(--red)}
+.alert-empty{padding:12px;text-align:center;font-size:10px;color:var(--text3)}
+#alert-form{
+  padding:10px 12px;border-top:1px solid var(--border);
+  background:var(--bg3);display:flex;flex-direction:column;gap:7px;
+}
+#alert-form-title{font-size:9px;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+.af-row{display:flex;gap:6px}
+.af-input{
+  flex:1;background:var(--bg);border:1px solid var(--border2);border-radius:5px;
+  color:var(--text);padding:5px 8px;font-family:var(--font);font-size:11px;outline:none;
+}
+.af-input:focus{border-color:var(--cyan)}
+.af-btn-up{
+  background:rgba(0,230,118,.12);border:1px solid var(--green);border-radius:5px;
+  color:var(--green);padding:5px 10px;cursor:pointer;font-size:10px;
+  font-family:var(--font);font-weight:700;transition:all .12s;white-space:nowrap;
+}
+.af-btn-up:hover{background:rgba(0,230,118,.25)}
+.af-btn-dn{
+  background:rgba(255,68,102,.12);border:1px solid var(--red);border-radius:5px;
+  color:var(--red);padding:5px 10px;cursor:pointer;font-size:10px;
+  font-family:var(--font);font-weight:700;transition:all .12s;white-space:nowrap;
+}
+.af-btn-dn:hover{background:rgba(255,68,102,.25)}
+
+/* ─── Toast notification ────────────────────── */
+#toast{
+  position:fixed;bottom:30px;right:16px;z-index:999;
+  background:var(--bg3);border:1px solid var(--border2);border-radius:8px;
+  padding:9px 14px;font-size:10px;color:var(--text);
+  box-shadow:0 6px 24px rgba(0,0,0,.5);
+  transform:translateY(80px);opacity:0;
+  transition:transform .25s ease,opacity .25s ease;pointer-events:none;
+  max-width:320px;
+}
+#toast.show{transform:translateY(0);opacity:1}
+#toast.toast-alert{border-color:var(--yellow);color:var(--yellow)}
+
+/* ─── Earnings Calendar ─────────────────────── */
+.earn-row{
+  display:flex;align-items:center;gap:7px;
+  padding:6px 11px;border-bottom:1px solid rgba(255,255,255,.04);
+  font-size:10px;transition:background .1s;cursor:default;
+}
+.earn-row:last-child{border-bottom:none}
+.earn-row:hover{background:rgba(255,255,255,.03)}
+.earn-sym{
+  font-weight:700;color:var(--cyan);min-width:40px;
+  cursor:pointer;transition:color .1s;
+}
+.earn-sym:hover{color:#fff}
+.earn-date{color:var(--text2);flex:1;font-size:9px}
+.earn-pill{
+  font-size:8px;font-weight:700;padding:1px 6px;
+  border-radius:3px;white-space:nowrap;flex-shrink:0;
+}
+.earn-pill.urgent{background:rgba(255,68,102,.18);color:var(--red);border:1px solid rgba(255,68,102,.3)}
+.earn-pill.soon{background:rgba(255,170,0,.14);color:var(--yellow);border:1px solid rgba(255,170,0,.3)}
+.earn-pill.upcoming{background:rgba(68,136,255,.12);color:var(--blue);border:1px solid rgba(68,136,255,.25)}
+.earn-eps{font-size:8px;color:var(--text3);text-align:right;white-space:nowrap}
+.earn-empty{padding:14px 11px;text-align:center;font-size:10px;color:var(--text3)}
 </style>
 </head>
 <body>
@@ -348,11 +449,38 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
   <div id="header-right">
     <div id="market-pill" class="closed"><span id="market-dot"></span><span id="market-label">—</span></div>
     <span id="countdown" style="font-size:10px;color:var(--text3)"></span>
+    <!-- Alert bell + panel -->
+    <div id="alert-btn-wrap">
+      <button class="hbtn" id="alert-btn" onclick="toggleAlertPanel()" title="Price Alerts">
+        🔔 Alerts<span id="alert-badge"></span>
+      </button>
+      <div id="alert-panel">
+        <div id="alert-panel-hdr">
+          <span id="alert-panel-title">🔔 Price Alerts</span>
+          <button id="alert-panel-close" onclick="closeAlertPanel()">✕</button>
+        </div>
+        <div id="alert-list"><div class="alert-empty">No active alerts</div></div>
+        <div id="alert-form">
+          <div id="alert-form-title">Set new alert</div>
+          <div class="af-row">
+            <input class="af-input" id="af-sym" placeholder="Symbol" maxlength="10" style="max-width:80px"/>
+            <input class="af-input" id="af-price" type="number" placeholder="Price $" step="0.01" min="0"/>
+          </div>
+          <div class="af-row">
+            <button class="af-btn-up" onclick="submitAlert('above')">↑ Alert Above</button>
+            <button class="af-btn-dn" onclick="submitAlert('below')">↓ Alert Below</button>
+          </div>
+        </div>
+      </div>
+    </div>
     <button class="hbtn" onclick="openScreener()">📋 Screener</button>
     <button class="hbtn" onclick="refreshAll()">↻ Refresh</button>
     <button class="hbtn" id="clear-btn" onclick="clearCache()">⊗ Cache</button>
   </div>
 </div>
+
+<!-- ═══ TOAST ══════════════════════════════════════════════ -->
+<div id="toast"></div>
 
 <!-- ═══ SECTOR HEATMAP ════════════════════════════════════ -->
 <div id="heatmap-strip">
@@ -428,6 +556,17 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
 
   <!-- ── RIGHT col ──────────────── -->
   <div class="col" id="col-right">
+
+    <!-- Earnings Calendar -->
+    <div class="card">
+      <div class="card-hdr">
+        <span class="card-title">📅 Earnings Calendar</span>
+        <span style="font-size:9px;color:var(--text3)" id="earn-range">Next 90 days · watchlist</span>
+      </div>
+      <div id="earnings-body">
+        <div class="loading" style="height:44px"><span class="spin"></span>Loading earnings…</div>
+      </div>
+    </div>
 
     <!-- Goal Tracker -->
     <div class="card">
@@ -1169,6 +1308,54 @@ async function loadNews(sym) {
 }
 
 // ───────────────────────────────────────────────────────────
+//  Earnings Calendar
+// ───────────────────────────────────────────────────────────
+function _fmtRev(v) {
+  if (!v) return '';
+  if (v >= 1e12) return (v / 1e12).toFixed(1) + 'T';
+  if (v >= 1e9)  return (v / 1e9).toFixed(1) + 'B';
+  if (v >= 1e6)  return (v / 1e6).toFixed(1) + 'M';
+  return '$' + v.toLocaleString();
+}
+
+async function loadEarnings() {
+  const body = document.getElementById('earnings-body');
+  if (!body) return;
+
+  const data = await api('/api/earnings');
+
+  if (!data || !data.earnings || data.earnings.length === 0) {
+    body.innerHTML = '<div class="earn-empty">No upcoming earnings in next 90 days</div>';
+    return;
+  }
+
+  // Update header range label
+  const rangeEl = document.getElementById('earn-range');
+  if (rangeEl) rangeEl.textContent = `${data.count} stock${data.count !== 1 ? 's' : ''} · next 90d`;
+
+  body.innerHTML = data.earnings.map(e => {
+    // Urgency pill
+    let pillCls, pillTxt;
+    if (e.days_until === 0)      { pillCls = 'urgent';   pillTxt = 'TODAY'; }
+    else if (e.days_until === 1) { pillCls = 'urgent';   pillTxt = 'TMRW';  }
+    else if (e.days_until <= 7)  { pillCls = 'soon';     pillTxt = `${e.days_until}d`; }
+    else                          { pillCls = 'upcoming'; pillTxt = `${e.days_until}d`; }
+
+    // EPS + revenue line
+    const epsTxt = e.eps_estimate != null ? `Est. $${e.eps_estimate.toFixed(2)}` : '';
+    const revTxt = e.revenue_estimate   != null ? _fmtRev(e.revenue_estimate)   : '';
+    const meta   = [epsTxt, revTxt].filter(Boolean).join(' · ');
+
+    return `<div class="earn-row">
+      <span class="earn-sym" onclick="selectStock('${e.symbol}')" title="Analyse ${e.symbol}">${e.symbol}</span>
+      <span class="earn-date">${e.date}</span>
+      <span class="earn-pill ${pillCls}">${pillTxt}</span>
+      <span class="earn-eps">${meta}</span>
+    </div>`;
+  }).join('');
+}
+
+// ───────────────────────────────────────────────────────────
 //  Status Bar
 // ───────────────────────────────────────────────────────────
 function updateStatus(data) {
@@ -1178,6 +1365,147 @@ function updateStatus(data) {
   const up = (data.change_pct||0) >= 0;
   chgEl.textContent = (up?'+':'') + (data.change_pct||0).toFixed(2) + '%';
   chgEl.className = up ? 'up' : 'dn';
+}
+
+// ═══════════════════════════════════════════════════════════
+//  PRICE ALERTS
+// ═══════════════════════════════════════════════════════════
+S.alerts = [];      // [{id, sym, price, type:'above'|'below', triggered}]
+S._toastTimer = null;
+
+// ── Persistence ────────────────────────────────────────────
+function _saveAlerts() {
+  try { localStorage.setItem('smf_alerts', JSON.stringify(S.alerts)); } catch {}
+}
+function _loadAlerts() {
+  try { S.alerts = JSON.parse(localStorage.getItem('smf_alerts') || '[]'); } catch { S.alerts = []; }
+  // Discard any alerts already triggered in a previous session
+  S.alerts = S.alerts.filter(a => !a.triggered);
+  _renderAlertList();
+  _updateAlertBadge();
+}
+
+// ── Badge ───────────────────────────────────────────────────
+function _updateAlertBadge() {
+  const badge = document.getElementById('alert-badge');
+  const count = S.alerts.length;
+  badge.textContent = count > 0 ? ' ' + count : '';
+  badge.style.display = count > 0 ? 'inline-flex' : 'none';
+}
+
+// ── Panel open/close ────────────────────────────────────────
+function toggleAlertPanel() {
+  const panel = document.getElementById('alert-panel');
+  const isOpen = panel.classList.toggle('open');
+  if (isOpen) {
+    // Pre-fill symbol with current stock, price with latest live price
+    const afSym = document.getElementById('af-sym');
+    const afPrice = document.getElementById('af-price');
+    afSym.value = S.symbol;
+    const live = _lastPrices[S.symbol];
+    if (live) afPrice.value = live.price.toFixed(2);
+    else if (S.curData) afPrice.value = (S.curData.current_price || '').toString();
+  }
+}
+function closeAlertPanel() {
+  document.getElementById('alert-panel').classList.remove('open');
+}
+// Close on outside click
+document.addEventListener('click', e => {
+  const wrap = document.getElementById('alert-btn-wrap');
+  if (wrap && !wrap.contains(e.target)) closeAlertPanel();
+});
+
+// ── Add alert ───────────────────────────────────────────────
+function submitAlert(type) {
+  const sym   = document.getElementById('af-sym').value.trim().toUpperCase();
+  const price = parseFloat(document.getElementById('af-price').value);
+  if (!sym || isNaN(price) || price <= 0) {
+    showToast('⚠️ Enter a valid symbol and price');
+    return;
+  }
+  // Ask for notification permission if we haven't yet
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+  const id = Date.now();
+  S.alerts.push({ id, sym, price, type, triggered: false });
+  _saveAlerts();
+  _renderAlertList();
+  _updateAlertBadge();
+  const dir = type === 'above' ? '↑ above' : '↓ below';
+  showToast(`🔔 Alert set: ${sym} ${dir} $${price.toFixed(2)}`);
+  // Reset price field, keep symbol
+  document.getElementById('af-price').value = '';
+}
+
+function deleteAlert(id) {
+  S.alerts = S.alerts.filter(a => a.id !== id);
+  _saveAlerts();
+  _renderAlertList();
+  _updateAlertBadge();
+}
+
+// ── Render list ─────────────────────────────────────────────
+function _renderAlertList() {
+  const list = document.getElementById('alert-list');
+  if (!list) return;
+  if (S.alerts.length === 0) {
+    list.innerHTML = '<div class="alert-empty">No active alerts</div>';
+    return;
+  }
+  list.innerHTML = S.alerts.map(a => {
+    const live = _lastPrices[a.sym];
+    const cur  = live ? `· now $${live.price.toFixed(2)}` : '';
+    const dirCls = a.type === 'above' ? 'alert-dir-up' : 'alert-dir-dn';
+    const dirTxt = a.type === 'above' ? '↑ above' : '↓ below';
+    return `<div class="alert-row">
+      <span style="color:var(--cyan);font-weight:700;min-width:40px">${a.sym}</span>
+      <span class="${dirCls}">${dirTxt}</span>
+      <span style="color:var(--text);font-weight:700">$${a.price.toFixed(2)}</span>
+      <span style="color:var(--text3);font-size:9px;flex:1">${cur}</span>
+      <button class="alert-del" onclick="deleteAlert(${a.id})" title="Remove">✕</button>
+    </div>`;
+  }).join('');
+}
+
+// ── Check alerts against a live price update ────────────────
+function checkAlerts(sym, price) {
+  let fired = false;
+  S.alerts = S.alerts.map(a => {
+    if (a.triggered || a.sym !== sym) return a;
+    const hit = (a.type === 'above' && price >= a.price) ||
+                (a.type === 'below' && price <= a.price);
+    if (!hit) return a;
+    _fireAlert(a, price);
+    fired = true;
+    return { ...a, triggered: true };
+  });
+  // Remove triggered ones
+  S.alerts = S.alerts.filter(a => !a.triggered);
+  if (fired) { _saveAlerts(); _renderAlertList(); _updateAlertBadge(); }
+}
+
+function _fireAlert(alert, currentPrice) {
+  const dir = alert.type === 'above' ? '↑' : '↓';
+  const body = `${alert.sym} hit $${currentPrice.toFixed(2)} ${dir}  (target $${alert.price.toFixed(2)})`;
+  // Desktop notification
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try {
+      new Notification('🔔 SMF Price Alert', { body, silent: false });
+    } catch {}
+  }
+  // In-app toast (always shown)
+  showToast(`🔔 ${body}`, 'alert');
+}
+
+// ── Toast ────────────────────────────────────────────────────
+function showToast(msg, type = 'info') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = type === 'alert' ? 'show toast-alert' : 'show';
+  clearTimeout(S._toastTimer);
+  S._toastTimer = setTimeout(() => { el.className = ''; }, 4500);
 }
 
 // ───────────────────────────────────────────────────────────
@@ -1211,6 +1539,7 @@ function renderCountdown() {
 async function refreshAll() {
   S.cdSec = REFRESH_SEC;
   await Promise.all([loadHeatmap(), loadWatchlist(), selectStock(S.symbol)]);
+  loadEarnings(); // fire-and-forget — slow, don't block countdown restart
   startCountdown();
 }
 
@@ -1299,6 +1628,9 @@ function applyLivePrices(prices) {
 
       // ── Update screener row if panel is open ─────────
       updateScreenerRow(sym, d);
+
+      // ── Check price alerts ────────────────────────────
+      checkAlerts(sym, d.price);
     }
     _lastPrices[sym] = d;
   });
@@ -1503,11 +1835,13 @@ function updateScreenerRow(sym, d) {
 //  3. Watchlist loads in background — chips + picks appear when ready
 // ───────────────────────────────────────────────────────────
 async function init() {
+  _loadAlerts();  // restore saved alerts from localStorage
   const DEFAULT_SYMS = 'AAPL,MSFT,NVDA,GOOGL,AMZN,META,JPM,V,TSLA,AMD,SPY,QQQ,NFLX,BAC,DIS';
   startSSE(DEFAULT_SYMS);   // live prices flowing before anything else loads
   startCountdown();
   await Promise.all([loadHeatmap(), selectStock(S.symbol)]); // fast first paint
-  loadWatchlist(); // background — chips + council picks appear when ready
+  loadWatchlist();  // background — chips + council picks appear when ready
+  loadEarnings();   // background — earnings calendar, 4h cache, won't re-fetch often
 }
 init();
 </script>

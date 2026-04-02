@@ -1416,6 +1416,104 @@ async def screener(
 # ─────────────────────────────────────────────
 #  News Feed  (Yahoo Finance RSS, no API key)
 # ─────────────────────────────────────────────
+#  Earnings Calendar  (yfinance .calendar, no API key)
+# ─────────────────────────────────────────────
+EARNINGS_TTL = 14400  # 4-hour cache — earnings dates are stable
+
+def _fetch_earnings_one(sym: str) -> dict | None:
+    """
+    Return next upcoming earnings record for one symbol, or None.
+    Handles both dict and DataFrame formats across yfinance versions.
+    """
+    try:
+        cal = yf.Ticker(sym).calendar
+        if cal is None:
+            return None
+
+        earn_date = None
+        eps_est   = None
+        rev_est   = None
+
+        if isinstance(cal, dict):
+            dates = cal.get("Earnings Date", [])
+            # dates can be a list, a single Timestamp, or empty
+            if isinstance(dates, (list, tuple)) and len(dates) > 0:
+                earn_date = pd.Timestamp(dates[0])
+            elif not isinstance(dates, (list, tuple)) and dates is not None:
+                try:
+                    earn_date = pd.Timestamp(dates)
+                except Exception:
+                    pass
+            eps_est = safe_float(cal.get("Earnings Average"))
+            rev_est = safe_float(cal.get("Revenue Average"))
+
+        elif isinstance(cal, pd.DataFrame) and not cal.empty:
+            # Older yfinance: metrics in index, dates in columns
+            try:
+                if "Earnings Date" in cal.index:
+                    earn_date = pd.Timestamp(cal.loc["Earnings Date"].iloc[0])
+                    if "Earnings Average" in cal.index:
+                        eps_est = safe_float(cal.loc["Earnings Average"].iloc[0])
+                    if "Revenue Average" in cal.index:
+                        rev_est = safe_float(cal.loc["Revenue Average"].iloc[0])
+            except Exception:
+                return None
+
+        if earn_date is None:
+            return None
+
+        # Normalize to date-only, drop timezone to avoid comparison issues
+        earn_day = pd.Timestamp(earn_date.date())
+        today    = pd.Timestamp(datetime.now().date())
+        days_until = (earn_day - today).days
+
+        # Only include upcoming (allow yesterday in case of late data) within 90 days
+        if days_until < -1 or days_until > 90:
+            return None
+
+        return {
+            "symbol":           sym,
+            "date":             earn_day.strftime("%b %d"),
+            "days_until":       max(0, days_until),
+            "eps_estimate":     round(eps_est, 2) if eps_est is not None else None,
+            "revenue_estimate": int(rev_est)      if rev_est is not None else None,
+        }
+    except Exception as e:
+        logger.debug("Earnings fetch failed for %s: %s", sym, e)
+        return None
+
+@app.get("/api/earnings")
+async def get_earnings():
+    cache_key = "earnings:watchlist"
+    with _lock:
+        entry = _cache.get(cache_key)
+        if entry and (time.time() - entry["ts"]) < EARNINGS_TTL:
+            return entry["data"]
+
+    loop = asyncio.get_event_loop()
+
+    def _fetch_all():
+        results = []
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            futures = {ex.submit(_fetch_earnings_one, sym): sym for sym in DEFAULT_WATCHLIST}
+            for future in as_completed(futures):
+                try:
+                    r = future.result()
+                    if r:
+                        results.append(r)
+                except Exception:
+                    pass
+        return sorted(results, key=lambda x: x["days_until"])
+
+    earnings = await loop.run_in_executor(None, _fetch_all)
+    result = {"earnings": earnings, "count": len(earnings)}
+
+    with _lock:
+        _cache[cache_key] = {"data": result, "ts": time.time()}
+
+    return result
+
+# ─────────────────────────────────────────────
 NEWS_TTL = 600  # 10-minute cache for news
 
 def _fetch_news(sym: str) -> list:
