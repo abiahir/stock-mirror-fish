@@ -16,6 +16,8 @@ from datetime import datetime, time as dtime, timezone
 import asyncio, json, logging, math, os, time, threading
 import urllib.error
 import urllib.request, urllib.parse
+import xml.etree.ElementTree as ET_xml
+from email.utils import parsedate_to_datetime
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -1410,6 +1412,91 @@ async def screener(
         "market":  _market_status.get("session", "unknown"),
         "filters": {"sector": sector, "min_score": min_score, "sort": sort},
     }
+
+# ─────────────────────────────────────────────
+#  News Feed  (Yahoo Finance RSS, no API key)
+# ─────────────────────────────────────────────
+NEWS_TTL = 600  # 10-minute cache for news
+
+def _fetch_news(sym: str) -> list:
+    """
+    Fetch latest headlines for a ticker from Yahoo Finance RSS.
+    Returns up to 6 articles: title, url, source, unix timestamp.
+    Uses stdlib xml.etree + urllib — zero extra dependencies.
+    """
+    url = (
+        "https://feeds.finance.yahoo.com/rss/2.0/headline"
+        f"?s={urllib.parse.quote(sym)}&region=US&lang=en-US"
+    )
+    headers = {
+        "User-Agent": "StockMirrorFish/4.1.0 (news-aggregator)",
+        "Accept": "application/rss+xml, application/xml, text/xml",
+    }
+    try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            raw = resp.read()
+        root_el = ET_xml.fromstring(raw)
+        items = root_el.findall(".//item")
+        news = []
+        for item in items[:6]:
+            title  = (item.findtext("title") or "").strip()
+            link   = (item.findtext("link")  or "").strip()
+            pub    = (item.findtext("pubDate") or "").strip()
+            source = (item.findtext("source") or "Yahoo Finance").strip()
+            if not title or not link:
+                continue
+            ts = 0
+            try:
+                ts = int(parsedate_to_datetime(pub).timestamp())
+            except Exception:
+                pass
+            news.append({
+                "title":  title[:220],
+                "url":    link,
+                "source": source or "Yahoo Finance",
+                "ts":     ts,
+            })
+        return news
+    except ET_xml.ParseError as e:
+        logger.warning("News XML parse error for %s: %s", sym, e)
+        return []
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+        logger.warning("News fetch network error for %s: %s", sym, e)
+        return []
+    except Exception as e:
+        if isinstance(e, (KeyboardInterrupt, SystemExit)):
+            raise
+        logger.warning("News fetch unexpected error for %s: %s", sym, e)
+        return []
+
+@app.get("/api/news/{sym}")
+async def get_news(sym: str):
+    sym = sym.strip().upper()
+    # Allow alphanumeric + dot + dash (handles BRK.B, BRK-B style tickers)
+    if not sym or len(sym) > 12 or not all(c.isalnum() or c in ".-" for c in sym):
+        return JSONResponse({"news": [], "symbol": sym, "count": 0})
+
+    cache_key = f"news:{sym}"
+    # Check cache — use extended TTL for news (store ts offset so cache_get works)
+    with _lock:
+        entry = _cache.get(cache_key)
+        if entry and (time.time() - entry["ts"]) < NEWS_TTL:
+            return entry["data"]
+
+    loop = asyncio.get_event_loop()
+    news = await loop.run_in_executor(None, _fetch_news, sym)
+    result = {"symbol": sym, "news": news, "count": len(news)}
+
+    with _lock:
+        # Double-checked locking: re-check cache before writing so that only
+        # the first concurrent request performs the fetch and writes the result.
+        entry = _cache.get(cache_key)
+        if entry and (time.time() - entry["ts"]) < NEWS_TTL:
+            return entry["data"]
+        _cache[cache_key] = {"data": result, "ts": time.time()}
+
+    return result
 
 @app.get("/")
 def root():

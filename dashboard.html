@@ -310,6 +310,23 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
   width:5px;height:5px;border-radius:50%;background:var(--green);
   flex-shrink:0;animation:pulse 2s infinite;
 }
+
+/* ─── News Feed ─────────────────────────────── */
+.news-item{
+  display:block;padding:8px 11px;
+  border-bottom:1px solid rgba(255,255,255,.04);
+  text-decoration:none;transition:background .12s;cursor:pointer;
+}
+.news-item:last-child{border-bottom:none}
+.news-item:hover{background:rgba(255,255,255,.04)}
+.news-title{
+  font-size:10px;color:var(--text);line-height:1.45;
+  margin-bottom:3px;transition:color .12s;
+}
+.news-item:hover .news-title{color:var(--cyan)}
+.news-meta{font-size:8px;color:var(--text3);display:flex;gap:6px;align-items:center}
+.news-dot{width:2px;height:2px;border-radius:50%;background:var(--text3)}
+.news-empty{padding:12px 11px;font-size:10px;color:var(--text3);text-align:center}
 </style>
 </head>
 <body>
@@ -352,6 +369,7 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
       <div class="loading"><span class="spin"></span>Awaiting analysis…</div>
     </div>
     <div id="discussion-area"></div>
+    <div id="news-area"></div>
   </div>
 
   <!-- ── CENTER col ─────────── -->
@@ -655,6 +673,8 @@ async function selectStock(sym) {
   document.getElementById('agents-area').innerHTML =
     '<div class="loading"><span class="spin"></span>Analyzing…</div>';
   document.getElementById('discussion-area').innerHTML = '';
+
+  loadNews(sym); // fire-and-forget — loads independently, doesn't block chart/agents
 
   const [data, analysis] = await Promise.all([
     api(`/api/stock/${sym}?period=${S.period}`),
@@ -1049,6 +1069,103 @@ function renderAllocation(stocks) {
   rows.innerHTML = html;
   document.getElementById('alloc-empty').classList.add('hidden');
   rows.classList.remove('hidden');
+}
+
+// ───────────────────────────────────────────────────────────
+//  News Feed
+// ───────────────────────────────────────────────────────────
+async function loadNews(sym) {
+  const area = document.getElementById('news-area');
+
+  function makeCard(subText) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    const hdr = document.createElement('div');
+    hdr.className = 'card-hdr';
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'card-title';
+    titleSpan.textContent = '📰 News';
+    const subSpan = document.createElement('span');
+    subSpan.style.cssText = 'font-size:9px;color:var(--text3)';
+    subSpan.textContent = subText;
+    hdr.appendChild(titleSpan);
+    hdr.appendChild(subSpan);
+    card.appendChild(hdr);
+    return card;
+  }
+
+  // Show skeleton immediately
+  const skeleton = makeCard(sym);
+  const loadingDiv = document.createElement('div');
+  loadingDiv.className = 'loading';
+  loadingDiv.style.height = '48px';
+  const spinEl = document.createElement('span');
+  spinEl.className = 'spin';
+  loadingDiv.appendChild(spinEl);
+  loadingDiv.appendChild(document.createTextNode('Fetching headlines…'));
+  skeleton.appendChild(loadingDiv);
+  area.innerHTML = '';
+  area.appendChild(skeleton);
+
+  const data = await api(`/api/news/${sym}`);
+
+  if (!data || !data.news || data.news.length === 0) {
+    const card = makeCard(sym);
+    const emptyDiv = document.createElement('div');
+    emptyDiv.className = 'news-empty';
+    emptyDiv.textContent = 'No headlines found';
+    card.appendChild(emptyDiv);
+    area.innerHTML = '';
+    area.appendChild(card);
+    return;
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  function timeAgo(ts) {
+    if (!ts) return '';
+    const age = now - ts;
+    if (age < 60)    return 'just now';
+    if (age < 3600)  return Math.floor(age / 60) + 'm ago';
+    if (age < 86400) return Math.floor(age / 3600) + 'h ago';
+    return Math.floor(age / 86400) + 'd ago';
+  }
+
+  const card = makeCard(`${sym} · ${data.count} headline${data.count !== 1 ? 's' : ''}`);
+  const list = document.createElement('div');
+  list.id = 'news-list';
+
+  data.news.forEach(n => {
+    const safeUrl = (typeof n.url === 'string' && /^https?:\/\//i.test(n.url)) ? n.url : '#';
+    const a = document.createElement('a');
+    a.className = 'news-item';
+    a.href = safeUrl;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+
+    const titleDiv = document.createElement('div');
+    titleDiv.className = 'news-title';
+    titleDiv.textContent = n.title;
+
+    const metaDiv = document.createElement('div');
+    metaDiv.className = 'news-meta';
+    const sourceSpan = document.createElement('span');
+    sourceSpan.textContent = n.source;
+    const dotSpan = document.createElement('span');
+    dotSpan.className = 'news-dot';
+    const timeSpan = document.createElement('span');
+    timeSpan.textContent = timeAgo(n.ts);
+    metaDiv.appendChild(sourceSpan);
+    metaDiv.appendChild(dotSpan);
+    metaDiv.appendChild(timeSpan);
+
+    a.appendChild(titleDiv);
+    a.appendChild(metaDiv);
+    list.appendChild(a);
+  });
+
+  card.appendChild(list);
+  area.innerHTML = '';
+  area.appendChild(card);
 }
 
 // ───────────────────────────────────────────────────────────
