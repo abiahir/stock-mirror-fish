@@ -789,7 +789,7 @@ def detect_patterns(hist: pd.DataFrame, technicals: dict, info: dict) -> list:
                                 "desc": "Price < MA20 < MA50 < MA200 — full bearish trend alignment"})
 
     except Exception as e:
-        logger.debug("detect_patterns error: %s", e)
+        logger.exception("Error during pattern detection")
 
     # Deduplicate by name, cap at 6 for UI
     seen, out = set(), []
@@ -1213,6 +1213,8 @@ async def chat(req: Request):
     question = str(body.get("question", "")).strip()
     if not symbol or not question:
         return JSONResponse({"error": "symbol and question required"}, status_code=400)
+    if not re.match(r'^[A-Z0-9.^-]{1,10}$', symbol):
+        return JSONResponse({"error": "invalid symbol"}, status_code=400)
 
     ana = analyze(symbol)
     if isinstance(ana, JSONResponse):
@@ -1248,10 +1250,10 @@ async def chat(req: Request):
             # If one of the symbols matches the current page, use the current analysis;
             # otherwise fetch both independently.
             if sym1_cmp == symbol:
-                ana1_cmp, ana2_cmp = data, analyze(sym2_cmp)
+                ana1_cmp, ana2_cmp = ana, analyze(sym2_cmp)
                 label1, label2 = symbol, sym2_cmp
             elif sym2_cmp == symbol:
-                ana1_cmp, ana2_cmp = data, analyze(sym1_cmp)
+                ana1_cmp, ana2_cmp = ana, analyze(sym1_cmp)
                 label1, label2 = symbol, sym1_cmp
             else:
                 ana1_cmp, ana2_cmp = analyze(sym1_cmp), analyze(sym2_cmp)

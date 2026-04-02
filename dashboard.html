@@ -1459,7 +1459,13 @@ function renderAllocation(stocks) {
 S.chatHistory = [];
 
 function _md(txt) {
-  return (txt || '')
+  const escaped = (txt || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+  return escaped
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\n/g, '<br>');
 }
@@ -1797,7 +1803,7 @@ function _renderPortfolio() {
       if (pct < worstPct) { worstPct = pct;  worstSym = p.sym; }
       const up = pnl >= 0;
       return `<div class="port-row">
-        <span class="port-sym" onclick="selectStock('${p.sym}')">${p.sym}</span>
+        <span class="port-sym" onclick="selectStock(${JSON.stringify(p.sym)})">${p.sym}</span>
         <span class="port-qty">${p.qty}sh</span>
         <span class="port-cur">$${cur.toFixed(2)}</span>
         <span class="port-pnl ${up?'up':'dn'}">${up?'+':''}$${Math.abs(pnl).toFixed(0)}</span>
@@ -1808,7 +1814,7 @@ function _renderPortfolio() {
       // Price not yet available — show cost basis only
       totalCost += cost;
       return `<div class="port-row">
-        <span class="port-sym" onclick="selectStock('${p.sym}')">${p.sym}</span>
+        <span class="port-sym" onclick="selectStock(${JSON.stringify(p.sym)})">${p.sym}</span>
         <span class="port-qty">${p.qty}sh</span>
         <span class="port-cur port-no-price">loading…</span>
         <span class="port-pnl port-no-price">—</span>
