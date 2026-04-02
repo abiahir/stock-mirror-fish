@@ -1489,6 +1489,11 @@ async def get_news(sym: str):
     result = {"symbol": sym, "news": news, "count": len(news)}
 
     with _lock:
+        # Double-checked locking: re-check cache before writing so that only
+        # the first concurrent request performs the fetch and writes the result.
+        entry = _cache.get(cache_key)
+        if entry and (time.time() - entry["ts"]) < NEWS_TTL:
+            return entry["data"]
         _cache[cache_key] = {"data": result, "ts": time.time()}
 
     return result

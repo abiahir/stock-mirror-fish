@@ -1076,25 +1076,47 @@ function renderAllocation(stocks) {
 // ───────────────────────────────────────────────────────────
 async function loadNews(sym) {
   const area = document.getElementById('news-area');
+
+  function makeCard(subText) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    const hdr = document.createElement('div');
+    hdr.className = 'card-hdr';
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'card-title';
+    titleSpan.textContent = '📰 News';
+    const subSpan = document.createElement('span');
+    subSpan.style.cssText = 'font-size:9px;color:var(--text3)';
+    subSpan.textContent = subText;
+    hdr.appendChild(titleSpan);
+    hdr.appendChild(subSpan);
+    card.appendChild(hdr);
+    return card;
+  }
+
   // Show skeleton immediately
-  area.innerHTML = `<div class="card">
-    <div class="card-hdr">
-      <span class="card-title">📰 News</span>
-      <span style="font-size:9px;color:var(--text3)">${sym}</span>
-    </div>
-    <div class="loading" style="height:48px"><span class="spin"></span>Fetching headlines…</div>
-  </div>`;
+  const skeleton = makeCard(sym);
+  const loadingDiv = document.createElement('div');
+  loadingDiv.className = 'loading';
+  loadingDiv.style.height = '48px';
+  const spinEl = document.createElement('span');
+  spinEl.className = 'spin';
+  loadingDiv.appendChild(spinEl);
+  loadingDiv.appendChild(document.createTextNode('Fetching headlines…'));
+  skeleton.appendChild(loadingDiv);
+  area.innerHTML = '';
+  area.appendChild(skeleton);
 
   const data = await api(`/api/news/${sym}`);
 
   if (!data || !data.news || data.news.length === 0) {
-    area.innerHTML = `<div class="card">
-      <div class="card-hdr">
-        <span class="card-title">📰 News</span>
-        <span style="font-size:9px;color:var(--text3)">${sym}</span>
-      </div>
-      <div class="news-empty">No headlines found</div>
-    </div>`;
+    const card = makeCard(sym);
+    const emptyDiv = document.createElement('div');
+    emptyDiv.className = 'news-empty';
+    emptyDiv.textContent = 'No headlines found';
+    card.appendChild(emptyDiv);
+    area.innerHTML = '';
+    area.appendChild(card);
     return;
   }
 
@@ -1108,23 +1130,42 @@ async function loadNews(sym) {
     return Math.floor(age / 86400) + 'd ago';
   }
 
-  const items = data.news.map(n => `
-    <a class="news-item" href="${n.url}" target="_blank" rel="noopener noreferrer">
-      <div class="news-title">${n.title}</div>
-      <div class="news-meta">
-        <span>${n.source}</span>
-        <span class="news-dot"></span>
-        <span>${timeAgo(n.ts)}</span>
-      </div>
-    </a>`).join('');
+  const card = makeCard(`${sym} · ${data.count} headline${data.count !== 1 ? 's' : ''}`);
+  const list = document.createElement('div');
+  list.id = 'news-list';
 
-  area.innerHTML = `<div class="card">
-    <div class="card-hdr">
-      <span class="card-title">📰 News</span>
-      <span style="font-size:9px;color:var(--text3)">${sym} · ${data.count} headline${data.count !== 1 ? 's' : ''}</span>
-    </div>
-    <div id="news-list">${items}</div>
-  </div>`;
+  data.news.forEach(n => {
+    const safeUrl = (typeof n.url === 'string' && /^https?:\/\//i.test(n.url)) ? n.url : '#';
+    const a = document.createElement('a');
+    a.className = 'news-item';
+    a.href = safeUrl;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+
+    const titleDiv = document.createElement('div');
+    titleDiv.className = 'news-title';
+    titleDiv.textContent = n.title;
+
+    const metaDiv = document.createElement('div');
+    metaDiv.className = 'news-meta';
+    const sourceSpan = document.createElement('span');
+    sourceSpan.textContent = n.source;
+    const dotSpan = document.createElement('span');
+    dotSpan.className = 'news-dot';
+    const timeSpan = document.createElement('span');
+    timeSpan.textContent = timeAgo(n.ts);
+    metaDiv.appendChild(sourceSpan);
+    metaDiv.appendChild(dotSpan);
+    metaDiv.appendChild(timeSpan);
+
+    a.appendChild(titleDiv);
+    a.appendChild(metaDiv);
+    list.appendChild(a);
+  });
+
+  card.appendChild(list);
+  area.innerHTML = '';
+  area.appendChild(card);
 }
 
 // ───────────────────────────────────────────────────────────
@@ -1462,4 +1503,13 @@ function updateScreenerRow(sym, d) {
 //  3. Watchlist loads in background — chips + picks appear when ready
 // ───────────────────────────────────────────────────────────
 async function init() {
-  c
+  const DEFAULT_SYMS = 'AAPL,MSFT,NVDA,GOOGL,AMZN,META,JPM,V,TSLA,AMD,SPY,QQQ,NFLX,BAC,DIS';
+  startSSE(DEFAULT_SYMS);   // live prices flowing before anything else loads
+  startCountdown();
+  await Promise.all([loadHeatmap(), selectStock(S.symbol)]); // fast first paint
+  loadWatchlist(); // background — chips + council picks appear when ready
+}
+init();
+</script>
+</body>
+</html>
