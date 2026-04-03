@@ -1341,6 +1341,18 @@ async def chat(req: Request):
                f"**{aligned}% — {cf.get('label','Mixed')}**. {note}")
         return {"agent": "Council", "emoji": "⏱", "color": "#4488ff", "response": txt}
 
+    # ── Market regime intent ─────────────────────────────────────────
+    if any(w in q for w in ["regime", "market condition", "market environment", "vix", "spy", "macro", "risk-on", "risk-off", "bull market", "bear market", "volatility"]):
+        reg = _cache.get("regime:v1", {}).get("data") or {}
+        if reg:
+            txt = (f"🌍 **Market Regime: {reg.get('emoji','')} {reg.get('regime','?')}** — {reg.get('description','')}. "
+                   f"VIX {reg.get('vix','?')} · SPY vs MA50 {reg.get('spy_vs_ma50',0):+.1f}% · "
+                   f"SPY vs MA200 {reg.get('spy_vs_ma200',0):+.1f}% · "
+                   f"SPY 1M {reg.get('spy_1m',0):+.1f}%.")
+        else:
+            txt = "Market regime data not loaded yet — it refreshes every 15 minutes automatically."
+        return {"agent": "Council", "emoji": "🌍", "color": "#4488ff", "response": txt}
+
     # ── Default: council summary ─────────────────────────────────────
     sc      = con.get("score", 0)
     rec     = con.get("recommendation", "Hold")
@@ -1890,6 +1902,83 @@ async def screener(
     }
 
 # ─────────────────────────────────────────────
+#  Market Regime Detector
+# ─────────────────────────────────────────────
+REGIME_TTL = 900  # 15-minute cache — regime is slow-moving
+
+@app.get("/api/regime")
+def get_regime():
+    cache_key = "regime:v1"
+    entry = _cache.get(cache_key)
+    if entry and (time.time() - entry["ts"]) < REGIME_TTL:
+        return entry["data"]
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_spy = ex.submit(lambda: yf.Ticker("SPY").history(period="1y"))
+            f_vix = ex.submit(lambda: yf.Ticker("^VIX").history(period="5d"))
+            spy_hist = f_spy.result()
+            vix_hist = f_vix.result()
+
+        if spy_hist.empty or vix_hist.empty:
+            return JSONResponse({"error": "market data unavailable"}, status_code=503)
+
+        spy   = spy_hist["Close"]
+        n_spy = len(spy)
+        vix   = round(float(vix_hist["Close"].iloc[-1]), 2)
+
+        spy_cur  = float(spy.iloc[-1])
+        ma50_val = float(spy.rolling(50, min_periods=50).mean().iloc[-1])
+        ma200_val = float(spy.rolling(200, min_periods=200).mean().iloc[-1]) if n_spy >= 200 else ma50_val
+
+        # Returns
+        spy_1w  = round((spy_cur - float(spy.iloc[-6]))  / float(spy.iloc[-6])  * 100, 2) if n_spy >= 6  else 0
+        spy_1m  = round((spy_cur - float(spy.iloc[-22])) / float(spy.iloc[-22]) * 100, 2) if n_spy >= 22 else 0
+        spy_3m  = round((spy_cur - float(spy.iloc[-66])) / float(spy.iloc[-66]) * 100, 2) if n_spy >= 66 else 0
+
+        vs_ma50  = round((spy_cur - ma50_val)  / ma50_val  * 100, 2)
+        vs_ma200 = round((spy_cur - ma200_val) / ma200_val * 100, 2)
+
+        above_ma50  = spy_cur > ma50_val
+        above_ma200 = spy_cur > ma200_val
+
+        # ── Regime classification ───────────────────────────────────
+        if vix > 30:
+            label, color, emoji = "High Volatility", "#ff2244", "🔴"
+            desc = f"VIX {vix:.1f} — extreme fear, expect large intraday swings"
+        elif not above_ma200 and vix > 22:
+            label, color, emoji = "Bear Market", "#ff4422", "🔴"
+            desc = f"SPY {vs_ma200:+.1f}% vs MA200, VIX {vix:.1f} — capital preservation mode"
+        elif not above_ma50 and vix > 18:
+            label, color, emoji = "Risk-Off", "#ff6644", "🟠"
+            desc = f"SPY below MA50, VIX {vix:.1f} — momentum breaking, reduce exposure"
+        elif above_ma50 and vix < 15 and spy_1m > 1:
+            label, color, emoji = "Risk-On", "#00ff88", "🟢"
+            desc = f"SPY +{spy_1m:.1f}% (1M), VIX {vix:.1f} — bulls firmly in control"
+        elif above_ma200 and above_ma50 and vix < 20:
+            label, color, emoji = "Trending Bull", "#44cc77", "🟢"
+            desc = f"SPY above both MAs, VIX {vix:.1f} — uptrend intact, dips are buyable"
+        elif vix > 22:
+            label, color, emoji = "Elevated Risk", "#ffaa00", "🟡"
+            desc = f"VIX {vix:.1f} — uncertainty elevated, favor quality and hedges"
+        else:
+            label, color, emoji = "Choppy", "#ffaa00", "🟡"
+            desc = f"SPY between key MAs, VIX {vix:.1f} — no strong trend, trade the range"
+
+        result = {
+            "regime": label, "emoji": emoji, "color": color, "description": desc,
+            "vix": vix, "spy": round(spy_cur, 2),
+            "spy_vs_ma50": vs_ma50, "spy_vs_ma200": vs_ma200,
+            "spy_1w": spy_1w, "spy_1m": spy_1m, "spy_3m": spy_3m,
+        }
+        _cache[cache_key] = {"data": result, "ts": time.time()}
+        return result
+
+    except Exception as e:
+        logger.exception("get_regime failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+# ─────────────────────────────────────────────
 #  News Feed  (Yahoo Finance RSS, no API key)
 # ─────────────────────────────────────────────
 #  Earnings Calendar  (yfinance .calendar, no API key)
@@ -2092,4 +2181,4 @@ if __name__=="__main__":
     print(f"  📈  Tracking {len(DEFAULT_WATCHLIST)} stocks + {len(SECTOR_ETFS)} sector ETFs")
     print(f"  🧠  Risk: Kelly·Sortino·Calmar·CVaR·ATR-Stop")
     print("="*58+"\n")
-    uvicorn.run(app, host="0.0.0.0", port=8080, timeout_keep_alive=30)
+    uvicorn.run(app, host="0.0.0.0", port=8080, timeout_ke

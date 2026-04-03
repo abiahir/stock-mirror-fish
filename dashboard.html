@@ -238,6 +238,25 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
 #market-dot{width:5px;height:5px;border-radius:50%;background:currentColor}
 #market-pill.open #market-dot{animation:pulse 1.5s infinite}
 
+/* ─── Regime badge ─────────────────────────── */
+#regime-badge{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:3px 9px;border-radius:12px;font-size:9px;font-weight:700;
+  border:1px solid var(--border2);color:var(--text3);
+  white-space:nowrap;cursor:default;position:relative;
+  transition:border-color .3s, color .3s, background .3s;
+}
+#regime-badge::after{
+  content:attr(data-tip);
+  display:none;position:absolute;bottom:calc(100% + 6px);right:0;
+  background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+  color:var(--text);font-size:9px;font-weight:400;padding:6px 9px;
+  min-width:200px;max-width:280px;white-space:normal;line-height:1.5;
+  z-index:300;box-shadow:0 4px 16px rgba(0,0,0,.5);text-align:left;
+}
+#regime-badge:hover::after{display:block}
+#regime-dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0}
+
 /* ─── Search autocomplete dropdown ────────── */
 #search-wrap{position:relative;display:inline-flex;align-items:center}
 #search-dropdown{
@@ -665,6 +684,7 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
     <!-- watchlist chips injected here -->
   </div>
   <div id="header-right">
+    <div id="regime-badge" data-tip="Loading market regime…"><span id="regime-dot"></span><span id="regime-label">Regime…</span></div>
     <div id="market-pill" class="closed"><span id="market-dot"></span><span id="market-label">—</span></div>
     <span id="countdown" style="font-size:10px;color:var(--text3)"></span>
     <!-- Alert bell + panel -->
@@ -1516,6 +1536,27 @@ function renderAllocation(stocks) {
 // ───────────────────────────────────────────────────────────
 //  News Feed
 // ───────────────────────────────────────────────────────────
+// ─── Market Regime Detector ───────────────────────────────────────────────
+S.regime = null;
+
+async function loadRegime() {
+  const data = await api('/api/regime');
+  if (!data || data.error) return;
+  S.regime = data;
+
+  const badge = document.getElementById('regime-badge');
+  const lbl   = document.getElementById('regime-label');
+  if (!badge || !lbl) return;
+
+  lbl.textContent = `${data.emoji} ${data.regime}`;
+  badge.style.color      = data.color;
+  badge.style.borderColor = data.color;
+  badge.style.background  = data.color + '18';
+
+  const tip = `${data.description} | VIX ${data.vix} · SPY vs MA50 ${data.spy_vs_ma50 >= 0 ? '+' : ''}${data.spy_vs_ma50}% · 1M ${data.spy_1m >= 0 ? '+' : ''}${data.spy_1m}%`;
+  badge.setAttribute('data-tip', tip);
+}
+
 // ─── Backtesting ──────────────────────────────────────────────────────────
 S.btChart   = null;
 S.btOpen    = false;
@@ -2283,6 +2324,7 @@ async function refreshAll() {
   S.cdSec = REFRESH_SEC;
   await Promise.all([loadHeatmap(), loadWatchlist(), selectStock(S.symbol)]);
   loadEarnings(); // fire-and-forget — slow, don't block countdown restart
+  loadRegime();   // refresh regime badge every full cycle
   startCountdown();
 }
 
@@ -2589,9 +2631,5 @@ async function init() {
   startCountdown();
   await Promise.all([loadHeatmap(), selectStock(S.symbol)]); // fast first paint
   loadWatchlist();  // background — chips + council picks appear when ready
-  loadEarnings();   // background — earnings calendar, 4h cache, won't re-fetch often
-}
-init();
-</script>
-</body>
-</html>
+  loadEarnings();   // background — earnings calendar
+  loadRegime();     // background — market regime badge in header
