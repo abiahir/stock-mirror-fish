@@ -1938,9 +1938,9 @@ def _fetch_earnings_one(sym: str) -> dict | None:
         if earn_date is None:
             return None
 
-        # Normalize to date-only, drop timezone to avoid comparison issues
+        # Normalize to date-only using UTC to avoid timezone-dependent drift
         earn_day = pd.Timestamp(earn_date.date())
-        today    = pd.Timestamp(datetime.now().date())
+        today    = pd.Timestamp(datetime.now(timezone.utc).date())
         days_until = (earn_day - today).days
 
         # Only include upcoming (allow yesterday in case of late data) within 90 days

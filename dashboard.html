@@ -1118,6 +1118,7 @@ async function selectStock(sym) {
     api(`/api/stock/${sym}?period=${S.period}`),
     api(`/api/analyze/${sym}?period=${S.period}`)
   ]);
+  if (S.symbol !== sym) return; // a newer selectStock call won the race
   if (!data || data.error) {
     document.getElementById('agents-area').innerHTML =
       `<div class="loading" style="color:var(--red)">Error: ${data?.error || 'Not found'}</div>`;
