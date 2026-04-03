@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
 from datetime import datetime, time as dtime, timezone
-import asyncio, json, logging, math, os, time, threading
+import asyncio, json, logging, math, os, re, time, threading
 import urllib.error
 import urllib.request, urllib.parse
 import xml.etree.ElementTree as ET_xml
@@ -662,12 +662,144 @@ def get_stock(symbol: str, period: str = "6mo"):
             "bb_upper":   bb_u,
             "bb_lower":   bb_l,
         }
+        result["patterns"] = detect_patterns(hist, result["technicals"], info)
         cache_set(key, result)
         return result
     except Exception as e:
         logger.exception("get_stock failed for %s", symbol)
         _metric_inc("get_stock_failures")
         return {"error": str(e), "symbol": symbol}
+
+# ─────────────────────────────────────────────
+#  Chart Pattern Recognition
+# ─────────────────────────────────────────────
+def detect_patterns(hist: pd.DataFrame, technicals: dict, info: dict) -> list:
+    """
+    Detect up to 6 actionable chart patterns from price history.
+    Each pattern: {name, type:'bullish'|'bearish'|'neutral', desc}
+    Pure math on existing data — no extra API calls.
+    """
+    patterns = []
+    try:
+        prices = hist["Close"]
+        opens  = hist["Open"]
+        n      = len(prices)
+        if n < 20:
+            return patterns
+
+        cur = float(prices.iloc[-1])
+
+        # ── Moving averages ──────────────────────────────────
+        ma20  = prices.rolling(20).mean()
+        ma50  = prices.rolling(50).mean() if n >= 50  else None
+        ma200 = prices.rolling(200).mean() if n >= 200 else None
+
+        # 1. Golden Cross — MA50 crossed above MA200 in last 10 bars
+        if ma50 is not None and ma200 is not None:
+            for i in range(2, min(11, n - 1)):
+                p50, p200 = float(ma50.iloc[-i-1]), float(ma200.iloc[-i-1])
+                c50, c200 = float(ma50.iloc[-i]),   float(ma200.iloc[-i])
+                if all(not math.isnan(v) for v in [p50, p200, c50, c200]):
+                    if p50 < p200 and c50 >= c200:
+                        patterns.append({"name": "Golden Cross", "type": "bullish",
+                            "desc": "MA50 crossed above MA200 — powerful long-term trend shift"})
+                        break
+
+        # 2. Death Cross — MA50 crossed below MA200 in last 10 bars
+        if ma50 is not None and ma200 is not None and not any(p["name"] == "Golden Cross" for p in patterns):
+            for i in range(2, min(11, n - 1)):
+                p50, p200 = float(ma50.iloc[-i-1]), float(ma200.iloc[-i-1])
+                c50, c200 = float(ma50.iloc[-i]),   float(ma200.iloc[-i])
+                if all(not math.isnan(v) for v in [p50, p200, c50, c200]):
+                    if p50 > p200 and c50 <= c200:
+                        patterns.append({"name": "Death Cross", "type": "bearish",
+                            "desc": "MA50 crossed below MA200 — long-term trend breakdown"})
+                        break
+
+        # 3. Volume Breakout / Climax
+        vz  = technicals.get("volume_zscore", 0) or 0
+        chg = float(prices.pct_change().iloc[-1]) if n > 1 else 0
+        if vz > 2.0 and chg > 0.005:
+            patterns.append({"name": "Volume Breakout", "type": "bullish",
+                "desc": f"Vol Z={vz:.1f}σ with price up — institutional accumulation signal"})
+        elif vz > 2.0 and chg < -0.005:
+            patterns.append({"name": "Volume Climax", "type": "bearish",
+                "desc": f"Vol Z={vz:.1f}σ with price down — distribution / selling climax"})
+
+        # 4. RSI extremes
+        rsi = technicals.get("rsi", 50) or 50
+        if rsi < 30:
+            patterns.append({"name": "RSI Oversold", "type": "bullish",
+                "desc": f"RSI {rsi:.0f} — extreme oversold, mean-reversion setup"})
+        elif rsi > 70:
+            patterns.append({"name": "RSI Overbought", "type": "bearish",
+                "desc": f"RSI {rsi:.0f} — extended momentum, watch for reversal"})
+
+        # 5. Bollinger Band Squeeze — bandwidth in bottom quintile
+        if n >= 30:
+            bb_std = prices.rolling(20).std()
+            bb_mid = prices.rolling(20).mean()
+            bw     = (bb_std * 4 / bb_mid).dropna()
+            if len(bw) >= 20:
+                cur_bw = float(bw.iloc[-1])
+                pct20  = float(bw.quantile(0.20))
+                if not math.isnan(cur_bw) and cur_bw < pct20:
+                    patterns.append({"name": "BB Squeeze", "type": "neutral",
+                        "desc": "Bollinger Bands compressed — volatility coiling, breakout imminent"})
+
+        # 6. Bullish Engulfing (last 2 candles)
+        if n >= 2 and len(opens) >= 2:
+            po, pc = float(opens.iloc[-2]), float(prices.iloc[-2])
+            co, cc = float(opens.iloc[-1]), float(prices.iloc[-1])
+            if pc < po and cc > co and co <= pc and cc >= po:
+                patterns.append({"name": "Bullish Engulfing", "type": "bullish",
+                    "desc": "Last candle body engulfs prior red — buyers overwhelmed sellers"})
+
+        # 7. Bearish Engulfing
+        if n >= 2 and len(opens) >= 2:
+            po, pc = float(opens.iloc[-2]), float(prices.iloc[-2])
+            co, cc = float(opens.iloc[-1]), float(prices.iloc[-1])
+            if pc > po and cc < co and co >= pc and cc <= po:
+                patterns.append({"name": "Bearish Engulfing", "type": "bearish",
+                    "desc": "Last candle body engulfs prior green — sellers overwhelmed buyers"})
+
+        # 8. Near 52-week high / low
+        w52h = safe_float(info.get("fiftyTwoWeekHigh"), 0)
+        w52l = safe_float(info.get("fiftyTwoWeekLow"), 0)
+        if w52h and w52h > 0 and abs(cur - w52h) / w52h < 0.03:
+            patterns.append({"name": "Near 52W High", "type": "bullish",
+                "desc": f"Within 3% of 52-week high ${w52h:.0f} — strong momentum"})
+        elif w52l and w52l > 0 and cur > 0 and abs(cur - w52l) / cur < 0.05:
+            patterns.append({"name": "Near 52W Low", "type": "neutral",
+                "desc": f"Within 5% of 52-week low ${w52l:.0f} — potential support reversal zone"})
+
+        # 9. Full MA ribbon alignment
+        if ma50 is not None:
+            m20 = float(ma20.iloc[-1])
+            m50 = float(ma50.iloc[-1])
+            if not math.isnan(m20) and not math.isnan(m50):
+                if ma200 is not None:
+                    m200 = float(ma200.iloc[-1])
+                    if not math.isnan(m200):
+                        if cur > m20 > m50 > m200:
+                            patterns.append({"name": "Bullish Ribbon", "type": "bullish",
+                                "desc": "Price > MA20 > MA50 > MA200 — full bullish trend alignment"})
+                        elif cur < m20 < m50 < m200:
+                            patterns.append({"name": "Bearish Ribbon", "type": "bearish",
+                                "desc": "Price < MA20 < MA50 < MA200 — full bearish trend alignment"})
+
+    except Exception as e:
+        logger.exception("Error during pattern detection")
+
+    # Deduplicate by name, cap at 6 for UI
+    seen, out = set(), []
+    for p in patterns:
+        if p["name"] not in seen:
+            seen.add(p["name"])
+            out.append(p)
+        if len(out) >= 6:
+            break
+    return out
 
 # ─────────────────────────────────────────────
 #  Agent Council (4 personas)
@@ -996,6 +1128,22 @@ def api_stock(symbol: str, period: str = "6mo"):
     if "error" in d: return JSONResponse(d, status_code=404)
     return d
 
+# ─────────────────────────────────────────────
+#  Multi-Timeframe Confluence helper
+# ─────────────────────────────────────────────
+def _score_tf(sym: str, period: str):
+    """Run the 4-agent council on a single timeframe, return avg score or None."""
+    try:
+        d = get_stock(sym, period)
+        if "error" in d:
+            return None
+        agents = [agent_rex(d), agent_vera(d), agent_q(d), agent_wade(d)]
+        return round(sum(a["score"] for a in agents) / len(agents), 1)
+    except Exception as e:
+        logger.debug("_score_tf %s %s: %s", sym, period, e)
+        return None
+
+
 @app.get("/api/analyze/{symbol}")
 def analyze(symbol: str):
     key = f"ana:{symbol.upper()}"
@@ -1011,6 +1159,29 @@ def analyze(symbol: str):
     atr        = d.get("technicals",{}).get("atr")
     levels     = calc_levels(d, agents, atr)
 
+    # ── Multi-Timeframe Confluence ─────────────
+    with ThreadPoolExecutor(max_workers=3) as _tfe:
+        _f1 = _tfe.submit(_score_tf, symbol, "1mo")
+        _f3 = _tfe.submit(_score_tf, symbol, "3mo")
+        _fy = _tfe.submit(_score_tf, symbol, "1y")
+        _s1, _s3, _sy = _f1.result(), _f3.result(), _fy.result()
+    _tf_vals = [_s1, _s3, _sy]
+    _bull = sum(1 for s in _tf_vals if s is not None and s > 10)
+    _bear = sum(1 for s in _tf_vals if s is not None and s < -10)
+    _n    = sum(1 for s in _tf_vals if s is not None)
+    if   _n == 0:        _cf_pct, _cf_label = 50, "No Data"
+    elif _bull == _n:    _cf_pct, _cf_label = 100, "Full Bull"
+    elif _bear == _n:    _cf_pct, _cf_label = 100, "Full Bear"
+    elif _bull > _bear:  _cf_pct = round(_bull/_n*100); _cf_label = "Mostly Bull"
+    elif _bear > _bull:  _cf_pct = round(_bear/_n*100); _cf_label = "Mostly Bear"
+    else:                _cf_pct, _cf_label = 33, "Mixed"
+    confluence = {
+        "scores": {"1M": _s1, "3M": _s3, "1Y": _sy},
+        "bull": _bull, "bear": _bear,
+        "neutral": _n - _bull - _bear,
+        "pct": _cf_pct, "label": _cf_label
+    }
+
     if avg>50:   ov,oc="Strong Buy","#00ff88"
     elif avg>20: ov,oc="Buy","#44cc77"
     elif avg>-10:ov,oc="Hold","#ffaa00"
@@ -1020,11 +1191,328 @@ def analyze(symbol: str):
     result={"symbol":symbol.upper(),"company_name":d.get("company_name",symbol),
             "current_price":d.get("current_price"),"change_pct":d.get("change_pct"),
             "technicals":d.get("technicals",{}),"fundamentals":d.get("fundamentals",{}),
+            "patterns":d.get("patterns",[]),
+            "confluence":confluence,
             "agents":agents,"discussion":discussion,"levels":levels,
             "consensus":{"score":round(avg,1),"recommendation":ov,"color":oc,
                          "confidence":min(95,int(abs(avg)*0.8+30))}}
     cache_set(key, result)
     return result
+
+# ─────────────────────────────────────────────
+#  AI Chat — Ask the Council
+# ─────────────────────────────────────────────
+@app.post("/api/chat")
+async def chat(req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    symbol   = str(body.get("symbol", "")).upper().strip()
+    question = str(body.get("question", "")).strip()
+    if not symbol or not question:
+        return JSONResponse({"error": "symbol and question required"}, status_code=400)
+    if not re.match(r'^[A-Z0-9.^-]{1,10}$', symbol):
+        return JSONResponse({"error": "invalid symbol"}, status_code=400)
+
+    ana = analyze(symbol)
+    if isinstance(ana, JSONResponse):
+        return {"agent": "Council", "emoji": "🎙️", "color": "#4488ff",
+                "response": f"I couldn't load data for **{symbol}**. Try selecting it from the watchlist first."}
+
+    q      = question.lower()
+    agents = ana.get("agents", [])
+    tech   = ana.get("technicals", {})
+    fund   = ana.get("fundamentals", {})
+    con    = ana.get("consensus", {})
+    pats   = ana.get("patterns", [])
+    cf     = ana.get("confluence", {})
+    price  = ana.get("current_price") or 0
+    chg    = ana.get("change_pct") or 0
+    name   = ana.get("company_name", symbol)
+
+    def _ag(idx):
+        return agents[idx] if len(agents) > idx else {}
+    rex, vera, qant, wade = _ag(0), _ag(1), _ag(2), _ag(3)
+
+    def _mc(v):
+        if not v: return "N/A"
+        if v >= 1e12: return f"${v/1e12:.2f}T"
+        if v >= 1e9:  return f"${v/1e9:.1f}B"
+        return f"${v/1e6:.0f}M"
+
+    # ── Compare intent ───────────────────────────────────────────────
+    cmp_m = re.search(r'\b([A-Z]{1,5})\s+(?:vs\.?|versus|and)\s+([A-Z]{1,5})\b', question.upper())
+    if cmp_m or any(w in q for w in ["compare ", " vs ", "versus "]):
+        if cmp_m:
+            sym1_cmp, sym2_cmp = cmp_m.group(1), cmp_m.group(2)
+            # If one of the symbols matches the current page, use the current analysis;
+            # otherwise fetch both independently.
+            if sym1_cmp == symbol:
+                ana1_cmp, ana2_cmp = ana, analyze(sym2_cmp)
+                label1, label2 = symbol, sym2_cmp
+            elif sym2_cmp == symbol:
+                ana1_cmp, ana2_cmp = ana, analyze(sym1_cmp)
+                label1, label2 = symbol, sym1_cmp
+            else:
+                ana1_cmp, ana2_cmp = analyze(sym1_cmp), analyze(sym2_cmp)
+                label1, label2 = sym1_cmp, sym2_cmp
+            if not isinstance(ana2_cmp, JSONResponse) and not isinstance(ana1_cmp, JSONResponse):
+                con1   = ana1_cmp.get("consensus", {})
+                con2   = ana2_cmp.get("consensus", {})
+                score1 = con1.get("score", 0)
+                score2 = con2.get("score", 0)
+                rec1   = con1.get("recommendation", "?")
+                rec2   = con2.get("recommendation", "?")
+                winner = label1 if score1 >= score2 else label2
+                diff   = abs(score1 - score2)
+                both_b = score1 > 10 and score2 > 10
+                both_d = score1 < -10 and score2 < -10
+                verdict = ("Both bullish!" if both_b else "Both weak." if both_d
+                           else f"Council prefers **{winner}** by {diff:.0f} pts.")
+                return {"agent": "Council", "emoji": "🎙️", "color": "#4488ff",
+                        "response": f"**{label1}** {score1:+.0f} ({rec1}) vs **{label2}** {score2:+.0f} ({rec2}). {verdict}"}
+
+    # ── Bull / momentum → Rex ────────────────────────────────────────
+    if any(w in q for w in ["bull", "buy", "upside", "momentum", "breakout", "bullish", "going up", "why up", "rocket", "long "]):
+        pts  = rex.get("key_points", [])
+        sc   = rex.get("score", 0)
+        txt  = f"🐂 **Rex** (score {sc:+.0f}) — {rex.get('recommendation','')} on {symbol}. "
+        txt += "Bull case: " + " · ".join(pts[:3]) if pts else "No strong bull signal right now."
+        return {"agent": "Rex", "emoji": "🐂", "color": rex.get("color","#ff6644"), "response": txt}
+
+    # ── Bear / risk → Vera ───────────────────────────────────────────
+    if any(w in q for w in ["bear", "sell", "risk", "bearish", "downside", "concern", "short ", "going down", "why down", "drop", "danger"]):
+        pts  = vera.get("key_points", [])
+        sc   = vera.get("score", 0)
+        txt  = f"🐻 **Vera** (score {sc:+.0f}) — {vera.get('recommendation','')} on {symbol}. "
+        txt += "Bear case: " + " · ".join(pts[:3]) if pts else "No major red flags detected."
+        return {"agent": "Vera", "emoji": "🐻", "color": vera.get("color","#4488ff"), "response": txt}
+
+    # ── Fundamental / valuation → Q ─────────────────────────────────
+    if any(w in q for w in ["fundamental", "value", "pe ratio", "p/e", "revenue", "debt", "profit", "margin", "valuation", "cheap", "expensive", "overvalued", "undervalued", "quant", "cash flow", "balance"]):
+        pe   = fund.get("pe_ratio")
+        pb   = fund.get("pb_ratio")
+        pts  = qant.get("key_points", [])
+        sc   = qant.get("score", 0)
+        txt  = (f"📐 **Q** (score {sc:+.0f}) — {name}: P/E {pe or 'N/A'}, "
+                f"P/B {pb or 'N/A'}, Cap {_mc(fund.get('market_cap'))}. ")
+        txt += " · ".join(pts[:3]) if pts else "Insufficient fundamental data."
+        return {"agent": "Q", "emoji": "📐", "color": qant.get("color","#44ff88"), "response": txt}
+
+    # ── Risk-adjusted → Wade ─────────────────────────────────────────
+    if any(w in q for w in ["safe", "volatility", "sharpe", "sortino", "hedge", "drawdown", "calmar", "risk-adjust", "atr", "defensive", "protect", "steady", "risk metric"]):
+        sharpe  = tech.get("sharpe_ratio")
+        sortino = tech.get("sortino_ratio")
+        vol     = tech.get("volatility_annual")
+        pts     = wade.get("key_points", [])
+        sc      = wade.get("score", 0)
+        vol_s   = f"{vol*100:.1f}%" if vol else "N/A"
+        txt     = (f"🛡 **Wade** (score {sc:+.0f}) — {symbol}: vol {vol_s}, "
+                   f"Sharpe {f'{sharpe:.2f}' if sharpe else 'N/A'}, "
+                   f"Sortino {f'{sortino:.2f}' if sortino else 'N/A'}. ")
+        txt += " · ".join(pts[:3]) if pts else "Risk data unavailable."
+        return {"agent": "Wade", "emoji": "🛡", "color": wade.get("color","#ffaa00"), "response": txt}
+
+    # ── Technical / chart intent ─────────────────────────────────────
+    if any(w in q for w in ["pattern", "chart", "technical", "rsi", "macd", "bollinger", "volume", "indicator", "signal", "moving average", "ma20", "ma50"]):
+        rsi  = tech.get("rsi", 50)
+        macd = tech.get("macd", {})
+        vz   = tech.get("volume_zscore", 0)
+        pat_s = ", ".join(p["name"] for p in pats) if pats else "none"
+        txt   = (f"📊 **Technicals for {symbol}:** RSI {rsi:.0f} "
+                 f"({'oversold' if rsi<30 else 'overbought' if rsi>70 else 'neutral'}), "
+                 f"MACD {macd.get('trend','?')}, Vol Z {vz:.1f}. Patterns: {pat_s}.")
+        if cf.get("label"):
+            txt += f" Confluence: {cf.get('pct')}% — {cf['label']}."
+        return {"agent": "Council", "emoji": "📊", "color": "#4488ff", "response": txt}
+
+    # ── Confluence / timeframe intent ────────────────────────────────
+    if any(w in q for w in ["confluence", "timeframe", "weekly", "monthly", "long term", "short term"]):
+        scores = cf.get("scores", {})
+        s1m, s3m, s1y = scores.get("1M"), scores.get("3M"), scores.get("1Y")
+        fmt = lambda v: f"{v:+.0f}" if v is not None else "?"
+        aligned = cf.get("pct", 0)
+        note = ("Strong aligned signal." if aligned >= 100
+                else "Moderate — size accordingly." if aligned >= 67
+                else "Timeframes conflict — reduce size.")
+        txt = (f"⏱ **Confluence for {symbol}:** 1M {fmt(s1m)} · 3M {fmt(s3m)} · 1Y {fmt(s1y)}. "
+               f"**{aligned}% — {cf.get('label','Mixed')}**. {note}")
+        return {"agent": "Council", "emoji": "⏱", "color": "#4488ff", "response": txt}
+
+    # ── Market regime intent ─────────────────────────────────────────
+    if any(w in q for w in ["regime", "market condition", "market environment", "vix", "spy", "macro", "risk-on", "risk-off", "bull market", "bear market", "volatility"]):
+        reg = _cache.get("regime:v1", {}).get("data") or {}
+        if reg:
+            txt = (f"🌍 **Market Regime: {reg.get('emoji','')} {reg.get('regime','?')}** — {reg.get('description','')}. "
+                   f"VIX {reg.get('vix','?')} · SPY vs MA50 {reg.get('spy_vs_ma50',0):+.1f}% · "
+                   f"SPY vs MA200 {reg.get('spy_vs_ma200',0):+.1f}% · "
+                   f"SPY 1M {reg.get('spy_1m',0):+.1f}%.")
+        else:
+            txt = "Market regime data not loaded yet — it refreshes every 15 minutes automatically."
+        return {"agent": "Council", "emoji": "🌍", "color": "#4488ff", "response": txt}
+
+    # ── Default: council summary ─────────────────────────────────────
+    sc      = con.get("score", 0)
+    rec     = con.get("recommendation", "Hold")
+    cfid    = con.get("confidence", 50)
+    chg_s   = f"{'+' if chg>=0 else ''}{chg:.2f}%"
+    pat_s   = ", ".join(p["name"] for p in pats[:2]) if pats else "none"
+    txt = (f"🎙️ **{name} ({symbol}):** ${price:.2f} ({chg_s} today). "
+           f"Consensus: **{rec}** (score {sc:+.0f}, confidence {cfid}%). "
+           f"Patterns: {pat_s}. Confluence: {cf.get('pct','?')}% — {cf.get('label','Mixed')}. "
+           f"Try asking: 'bull case', 'bear risks', 'technicals', 'risk metrics', or compare with another ticker!")
+    return {"agent": "Council", "emoji": "🎙️", "color": "#4488ff", "response": txt}
+
+
+# ─────────────────────────────────────────────
+#  Backtesting Engine
+# ─────────────────────────────────────────────
+@app.get("/api/backtest/{symbol}")
+def backtest(symbol: str, period: str = "1y"):
+    key = f"bt:{symbol.upper()}:{period}"
+    cached = cache_get(key)
+    if cached: return cached
+
+    try:
+        ticker = yf.Ticker(symbol.upper())
+        hist   = ticker.history(period=period)
+        if hist.empty or len(hist) < 60:
+            return JSONResponse({"error": f"Not enough history for {symbol}"}, status_code=404)
+
+        prices = hist["Close"]
+        n      = len(prices)
+
+        # ── Indicators ──────────────────────────────────────────────
+        # RSI(14)
+        delta    = prices.diff()
+        gain     = delta.clip(lower=0)
+        loss     = (-delta).clip(lower=0)
+        avg_g    = gain.rolling(14, min_periods=14).mean()
+        avg_l    = loss.rolling(14, min_periods=14).mean()
+        rs       = avg_g / avg_l.replace(0, 1e-9)
+        rsi      = 100 - (100 / (1 + rs))
+
+        # MACD(12,26,9)
+        ema12     = prices.ewm(span=12, adjust=False).mean()
+        ema26     = prices.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        sig_line  = macd_line.ewm(span=9, adjust=False).mean()
+        macd_hist = macd_line - sig_line
+
+        # MA20
+        ma20 = prices.rolling(20, min_periods=20).mean()
+
+        # ── Signal: 3-point scoring per bar ─────────────────────────
+        # +1 RSI in sweet spot (30-65), +1 price > MA20, +1 MACD hist > 0
+        # Buy on score >= 2, sell on score == 0
+        warmup = 35
+        bull_score = (
+            ((rsi > 30) & (rsi < 65)).astype(int)
+            + (prices > ma20).astype(int)
+            + (macd_hist > 0).astype(int)
+        )
+
+        # ── Simulate trades ─────────────────────────────────────────
+        CAPITAL    = 10_000.0
+        cash       = CAPITAL
+        shares     = 0.0
+        in_trade   = False
+        entry_px   = 0.0
+        entry_date = ""
+        trades     = []
+        equity     = []  # [{d, v, bnh}]
+
+        bnh_start = float(prices.iloc[warmup])
+
+        for i in range(warmup, n):
+            px  = float(prices.iloc[i])
+            dt  = str(hist.index[i])[:10]
+            sc  = int(bull_score.iloc[i])
+            val = cash + shares * px
+            equity.append({"d": dt, "v": round(val, 2),
+                           "bnh": round(CAPITAL * px / bnh_start, 2)})
+
+            if not in_trade and sc >= 2:
+                shares     = cash / px
+                cash       = 0.0
+                entry_px   = px
+                entry_date = dt
+                in_trade   = True
+            elif in_trade and sc == 0:
+                cash   = shares * px
+                shares = 0.0
+                pct    = (px - entry_px) / entry_px * 100
+                trades.append({
+                    "entry_dt": entry_date, "exit_dt": dt,
+                    "entry": round(entry_px, 2), "exit": round(px, 2),
+                    "pct": round(pct, 2), "win": pct > 0
+                })
+                in_trade = False
+
+        # Close any open position at last price
+        final_px = float(prices.iloc[-1])
+        if in_trade:
+            cash   = shares * final_px
+            shares = 0.0
+            pct    = (final_px - entry_px) / entry_px * 100
+            trades.append({
+                "entry_dt": entry_date, "exit_dt": str(hist.index[-1])[:10],
+                "entry": round(entry_px, 2), "exit": round(final_px, 2),
+                "pct": round(pct, 2), "win": pct > 0, "open": True
+            })
+
+        final_val = cash
+
+        # ── Metrics ─────────────────────────────────────────────────
+        strat_ret = (final_val - CAPITAL) / CAPITAL * 100
+        bnh_ret   = (final_px - bnh_start) / bnh_start * 100
+        n_trades  = len(trades)
+        wins      = sum(1 for t in trades if t["win"])
+        win_rate  = wins / n_trades * 100 if n_trades else 0
+        avg_trade = sum(t["pct"] for t in trades) / n_trades if n_trades else 0
+
+        # Max drawdown on equity curve
+        vals    = [e["v"] for e in equity]
+        peak    = vals[0] if vals else CAPITAL
+        max_dd  = 0.0
+        for v in vals:
+            if v > peak:
+                peak = v
+            dd = (peak - v) / peak * 100 if peak > 0 else 0
+            if dd > max_dd:
+                max_dd = dd
+
+        # Downsample equity curve to ≤120 points for JSON efficiency
+        step   = max(1, len(equity) // 120)
+        eq_out = equity[::step]
+        if equity and eq_out[-1] != equity[-1]:
+            eq_out.append(equity[-1])
+
+        result = {
+            "symbol": symbol.upper(),
+            "period": period,
+            "metrics": {
+                "strat_return":  round(strat_ret, 2),
+                "bnh_return":    round(bnh_ret, 2),
+                "alpha":         round(strat_ret - bnh_ret, 2),
+                "win_rate":      round(win_rate, 1),
+                "avg_trade_pct": round(avg_trade, 2),
+                "max_drawdown":  round(max_dd, 2),
+                "n_trades":      n_trades,
+                "final_value":   round(final_val, 2),
+            },
+            "equity": eq_out,
+            "trades": trades[-20:],  # last 20 trades for UI
+        }
+        cache_set(key, result)
+        return result
+
+    except Exception as e:
+        logger.exception("backtest failed for %s", symbol)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
 
 def _wl_item(sym):
     try:
@@ -1414,7 +1902,182 @@ async def screener(
     }
 
 # ─────────────────────────────────────────────
+#  Market Regime Detector
+# ─────────────────────────────────────────────
+REGIME_TTL = 900  # 15-minute cache — regime is slow-moving
+
+@app.get("/api/regime")
+def get_regime():
+    cache_key = "regime:v1"
+    entry = _cache.get(cache_key)
+    if entry and (time.time() - entry["ts"]) < REGIME_TTL:
+        return entry["data"]
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_spy = ex.submit(lambda: yf.Ticker("SPY").history(period="1y"))
+            f_vix = ex.submit(lambda: yf.Ticker("^VIX").history(period="5d"))
+            spy_hist = f_spy.result()
+            vix_hist = f_vix.result()
+
+        if spy_hist.empty or vix_hist.empty:
+            return JSONResponse({"error": "market data unavailable"}, status_code=503)
+
+        spy   = spy_hist["Close"]
+        n_spy = len(spy)
+        vix   = round(float(vix_hist["Close"].iloc[-1]), 2)
+
+        spy_cur  = float(spy.iloc[-1])
+        ma50_val = float(spy.rolling(50, min_periods=50).mean().iloc[-1])
+        ma200_val = float(spy.rolling(200, min_periods=200).mean().iloc[-1]) if n_spy >= 200 else ma50_val
+
+        # Returns
+        spy_1w  = round((spy_cur - float(spy.iloc[-6]))  / float(spy.iloc[-6])  * 100, 2) if n_spy >= 6  else 0
+        spy_1m  = round((spy_cur - float(spy.iloc[-22])) / float(spy.iloc[-22]) * 100, 2) if n_spy >= 22 else 0
+        spy_3m  = round((spy_cur - float(spy.iloc[-66])) / float(spy.iloc[-66]) * 100, 2) if n_spy >= 66 else 0
+
+        vs_ma50  = round((spy_cur - ma50_val)  / ma50_val  * 100, 2)
+        vs_ma200 = round((spy_cur - ma200_val) / ma200_val * 100, 2)
+
+        above_ma50  = spy_cur > ma50_val
+        above_ma200 = spy_cur > ma200_val
+
+        # ── Regime classification ───────────────────────────────────
+        if vix > 30:
+            label, color, emoji = "High Volatility", "#ff2244", "🔴"
+            desc = f"VIX {vix:.1f} — extreme fear, expect large intraday swings"
+        elif not above_ma200 and vix > 22:
+            label, color, emoji = "Bear Market", "#ff4422", "🔴"
+            desc = f"SPY {vs_ma200:+.1f}% vs MA200, VIX {vix:.1f} — capital preservation mode"
+        elif not above_ma50 and vix > 18:
+            label, color, emoji = "Risk-Off", "#ff6644", "🟠"
+            desc = f"SPY below MA50, VIX {vix:.1f} — momentum breaking, reduce exposure"
+        elif above_ma50 and vix < 15 and spy_1m > 1:
+            label, color, emoji = "Risk-On", "#00ff88", "🟢"
+            desc = f"SPY +{spy_1m:.1f}% (1M), VIX {vix:.1f} — bulls firmly in control"
+        elif above_ma200 and above_ma50 and vix < 20:
+            label, color, emoji = "Trending Bull", "#44cc77", "🟢"
+            desc = f"SPY above both MAs, VIX {vix:.1f} — uptrend intact, dips are buyable"
+        elif vix > 22:
+            label, color, emoji = "Elevated Risk", "#ffaa00", "🟡"
+            desc = f"VIX {vix:.1f} — uncertainty elevated, favor quality and hedges"
+        else:
+            label, color, emoji = "Choppy", "#ffaa00", "🟡"
+            desc = f"SPY between key MAs, VIX {vix:.1f} — no strong trend, trade the range"
+
+        result = {
+            "regime": label, "emoji": emoji, "color": color, "description": desc,
+            "vix": vix, "spy": round(spy_cur, 2),
+            "spy_vs_ma50": vs_ma50, "spy_vs_ma200": vs_ma200,
+            "spy_1w": spy_1w, "spy_1m": spy_1m, "spy_3m": spy_3m,
+        }
+        _cache[cache_key] = {"data": result, "ts": time.time()}
+        return result
+
+    except Exception as e:
+        logger.exception("get_regime failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+# ─────────────────────────────────────────────
 #  News Feed  (Yahoo Finance RSS, no API key)
+# ─────────────────────────────────────────────
+#  Earnings Calendar  (yfinance .calendar, no API key)
+# ─────────────────────────────────────────────
+EARNINGS_TTL = 14400  # 4-hour cache — earnings dates are stable
+
+def _fetch_earnings_one(sym: str) -> dict | None:
+    """
+    Return next upcoming earnings record for one symbol, or None.
+    Handles both dict and DataFrame formats across yfinance versions.
+    """
+    try:
+        cal = yf.Ticker(sym).calendar
+        if cal is None:
+            return None
+
+        earn_date = None
+        eps_est   = None
+        rev_est   = None
+
+        if isinstance(cal, dict):
+            dates = cal.get("Earnings Date", [])
+            # dates can be a list, a single Timestamp, or empty
+            if isinstance(dates, (list, tuple)) and len(dates) > 0:
+                earn_date = pd.Timestamp(dates[0])
+            elif not isinstance(dates, (list, tuple)) and dates is not None:
+                try:
+                    earn_date = pd.Timestamp(dates)
+                except Exception:
+                    pass
+            eps_est = safe_float(cal.get("Earnings Average"))
+            rev_est = safe_float(cal.get("Revenue Average"))
+
+        elif isinstance(cal, pd.DataFrame) and not cal.empty:
+            # Older yfinance: metrics in index, dates in columns
+            try:
+                if "Earnings Date" in cal.index:
+                    earn_date = pd.Timestamp(cal.loc["Earnings Date"].iloc[0])
+                    if "Earnings Average" in cal.index:
+                        eps_est = safe_float(cal.loc["Earnings Average"].iloc[0])
+                    if "Revenue Average" in cal.index:
+                        rev_est = safe_float(cal.loc["Revenue Average"].iloc[0])
+            except Exception:
+                return None
+
+        if earn_date is None:
+            return None
+
+        # Normalize to date-only using UTC to avoid timezone-dependent drift
+        earn_day = pd.Timestamp(earn_date.date())
+        today    = pd.Timestamp(datetime.now(timezone.utc).date())
+        days_until = (earn_day - today).days
+
+        # Only include upcoming (allow yesterday in case of late data) within 90 days
+        if days_until < -1 or days_until > 90:
+            return None
+
+        return {
+            "symbol":           sym,
+            "date":             earn_day.strftime("%b %d"),
+            "days_until":       max(0, days_until),
+            "eps_estimate":     round(eps_est, 2) if eps_est is not None else None,
+            "revenue_estimate": int(rev_est)      if rev_est is not None else None,
+        }
+    except Exception as e:
+        logger.debug("Earnings fetch failed for %s: %s", sym, e)
+        return None
+
+@app.get("/api/earnings")
+async def get_earnings():
+    cache_key = "earnings:watchlist"
+    with _lock:
+        entry = _cache.get(cache_key)
+        if entry and (time.time() - entry["ts"]) < EARNINGS_TTL:
+            return entry["data"]
+
+    loop = asyncio.get_event_loop()
+
+    def _fetch_all():
+        results = []
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            futures = {ex.submit(_fetch_earnings_one, sym): sym for sym in DEFAULT_WATCHLIST}
+            for future in as_completed(futures):
+                try:
+                    r = future.result()
+                    if r:
+                        results.append(r)
+                except Exception:
+                    pass
+        return sorted(results, key=lambda x: x["days_until"])
+
+    earnings = await loop.run_in_executor(None, _fetch_all)
+    result = {"earnings": earnings, "count": len(earnings)}
+
+    with _lock:
+        _cache[cache_key] = {"data": result, "ts": time.time()}
+
+    return result
+
 # ─────────────────────────────────────────────
 NEWS_TTL = 600  # 10-minute cache for news
 
@@ -1518,4 +2181,4 @@ if __name__=="__main__":
     print(f"  📈  Tracking {len(DEFAULT_WATCHLIST)} stocks + {len(SECTOR_ETFS)} sector ETFs")
     print(f"  🧠  Risk: Kelly·Sortino·Calmar·CVaR·ATR-Stop")
     print("="*58+"\n")
-    uvicorn.run(app, host="0.0.0.0", port=8080, timeout_keep_alive=30)
+    uvicorn.run(app, host="0.0.0.0", port=8080)
