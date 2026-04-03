@@ -2181,4 +2181,4 @@ if __name__=="__main__":
     print(f"  📈  Tracking {len(DEFAULT_WATCHLIST)} stocks + {len(SECTOR_ETFS)} sector ETFs")
     print(f"  🧠  Risk: Kelly·Sortino·Calmar·CVaR·ATR-Stop")
     print("="*58+"\n")
-    uvicorn.run(app, host="0.0.0.0", port=8080, timeout_ke
+    uvicorn.run(app, host="0.0.0.0", port=8080)
