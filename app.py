@@ -1354,6 +1354,154 @@ async def chat(req: Request):
     return {"agent": "Council", "emoji": "🎙️", "color": "#4488ff", "response": txt}
 
 
+# ─────────────────────────────────────────────
+#  Backtesting Engine
+# ─────────────────────────────────────────────
+@app.get("/api/backtest/{symbol}")
+def backtest(symbol: str, period: str = "1y"):
+    key = f"bt:{symbol.upper()}:{period}"
+    cached = cache_get(key)
+    if cached: return cached
+
+    try:
+        ticker = yf.Ticker(symbol.upper())
+        hist   = ticker.history(period=period)
+        if hist.empty or len(hist) < 60:
+            return JSONResponse({"error": f"Not enough history for {symbol}"}, status_code=404)
+
+        prices = hist["Close"]
+        n      = len(prices)
+
+        # ── Indicators ──────────────────────────────────────────────
+        # RSI(14)
+        delta    = prices.diff()
+        gain     = delta.clip(lower=0)
+        loss     = (-delta).clip(lower=0)
+        avg_g    = gain.rolling(14, min_periods=14).mean()
+        avg_l    = loss.rolling(14, min_periods=14).mean()
+        rs       = avg_g / avg_l.replace(0, 1e-9)
+        rsi      = 100 - (100 / (1 + rs))
+
+        # MACD(12,26,9)
+        ema12     = prices.ewm(span=12, adjust=False).mean()
+        ema26     = prices.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        sig_line  = macd_line.ewm(span=9, adjust=False).mean()
+        macd_hist = macd_line - sig_line
+
+        # MA20
+        ma20 = prices.rolling(20, min_periods=20).mean()
+
+        # ── Signal: 3-point scoring per bar ─────────────────────────
+        # +1 RSI in sweet spot (30-65), +1 price > MA20, +1 MACD hist > 0
+        # Buy on score >= 2, sell on score == 0
+        warmup = 35
+        bull_score = (
+            ((rsi > 30) & (rsi < 65)).astype(int)
+            + (prices > ma20).astype(int)
+            + (macd_hist > 0).astype(int)
+        )
+
+        # ── Simulate trades ─────────────────────────────────────────
+        CAPITAL    = 10_000.0
+        cash       = CAPITAL
+        shares     = 0.0
+        in_trade   = False
+        entry_px   = 0.0
+        entry_date = ""
+        trades     = []
+        equity     = []  # [{d, v, bnh}]
+
+        bnh_start = float(prices.iloc[warmup])
+
+        for i in range(warmup, n):
+            px  = float(prices.iloc[i])
+            dt  = str(hist.index[i])[:10]
+            sc  = int(bull_score.iloc[i])
+            val = cash + shares * px
+            equity.append({"d": dt, "v": round(val, 2),
+                           "bnh": round(CAPITAL * px / bnh_start, 2)})
+
+            if not in_trade and sc >= 2:
+                shares     = cash / px
+                cash       = 0.0
+                entry_px   = px
+                entry_date = dt
+                in_trade   = True
+            elif in_trade and sc == 0:
+                cash   = shares * px
+                shares = 0.0
+                pct    = (px - entry_px) / entry_px * 100
+                trades.append({
+                    "entry_dt": entry_date, "exit_dt": dt,
+                    "entry": round(entry_px, 2), "exit": round(px, 2),
+                    "pct": round(pct, 2), "win": pct > 0
+                })
+                in_trade = False
+
+        # Close any open position at last price
+        final_px = float(prices.iloc[-1])
+        if in_trade:
+            cash   = shares * final_px
+            shares = 0.0
+            pct    = (final_px - entry_px) / entry_px * 100
+            trades.append({
+                "entry_dt": entry_date, "exit_dt": str(hist.index[-1])[:10],
+                "entry": round(entry_px, 2), "exit": round(final_px, 2),
+                "pct": round(pct, 2), "win": pct > 0, "open": True
+            })
+
+        final_val = cash
+
+        # ── Metrics ─────────────────────────────────────────────────
+        strat_ret = (final_val - CAPITAL) / CAPITAL * 100
+        bnh_ret   = (final_px - bnh_start) / bnh_start * 100
+        n_trades  = len(trades)
+        wins      = sum(1 for t in trades if t["win"])
+        win_rate  = wins / n_trades * 100 if n_trades else 0
+        avg_trade = sum(t["pct"] for t in trades) / n_trades if n_trades else 0
+
+        # Max drawdown on equity curve
+        vals    = [e["v"] for e in equity]
+        peak    = vals[0] if vals else CAPITAL
+        max_dd  = 0.0
+        for v in vals:
+            if v > peak:
+                peak = v
+            dd = (peak - v) / peak * 100 if peak > 0 else 0
+            if dd > max_dd:
+                max_dd = dd
+
+        # Downsample equity curve to ≤120 points for JSON efficiency
+        step   = max(1, len(equity) // 120)
+        eq_out = equity[::step]
+        if equity and eq_out[-1] != equity[-1]:
+            eq_out.append(equity[-1])
+
+        result = {
+            "symbol": symbol.upper(),
+            "period": period,
+            "metrics": {
+                "strat_return":  round(strat_ret, 2),
+                "bnh_return":    round(bnh_ret, 2),
+                "alpha":         round(strat_ret - bnh_ret, 2),
+                "win_rate":      round(win_rate, 1),
+                "avg_trade_pct": round(avg_trade, 2),
+                "max_drawdown":  round(max_dd, 2),
+                "n_trades":      n_trades,
+                "final_value":   round(final_val, 2),
+            },
+            "equity": eq_out,
+            "trades": trades[-20:],  # last 20 trades for UI
+        }
+        cache_set(key, result)
+        return result
+
+    except Exception as e:
+        logger.exception("backtest failed for %s", symbol)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 def _wl_item(sym):
     try:
         d=get_stock(sym,"3mo")

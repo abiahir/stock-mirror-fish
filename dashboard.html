@@ -506,6 +506,45 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
 .cf-tf-score{font-size:10px;font-weight:700}
 .cf-loading{padding:14px 11px;text-align:center;font-size:10px;color:var(--text3)}
 
+/* ─── Backtesting ────────────────────────────── */
+#backtest-panel{display:none}
+.bt-select{
+  background:var(--bg3);border:1px solid var(--border2);
+  border-radius:5px;color:var(--text);padding:3px 6px;
+  font-family:var(--font);font-size:9px;cursor:pointer;outline:none;
+}
+.bt-select:focus{border-color:var(--cyan)}
+#bt-metrics{
+  display:flex;flex-wrap:wrap;gap:5px;
+  padding:8px 11px;border-bottom:1px solid var(--border);
+}
+.bt-stat{
+  flex:1;min-width:70px;display:flex;flex-direction:column;align-items:center;
+  background:var(--bg3);border:1px solid var(--border2);
+  border-radius:6px;padding:6px 8px;
+}
+.bt-stat-val{font-size:13px;font-weight:700}
+.bt-stat-val.up{color:var(--green)}.bt-stat-val.dn{color:var(--red)}.bt-stat-val.neu{color:var(--text)}
+.bt-stat-lbl{font-size:8px;color:var(--text3);margin-top:2px;text-align:center;white-space:nowrap}
+#bt-chart-wrap{padding:0 8px 6px;height:130px;position:relative}
+#bt-trades{
+  max-height:160px;overflow-y:auto;
+  scrollbar-width:thin;scrollbar-color:var(--border) transparent;
+}
+.bt-tr{
+  display:grid;grid-template-columns:70px 70px 54px 54px 52px 44px;
+  gap:2px;padding:4px 11px;font-size:9px;
+  border-bottom:1px solid rgba(255,255,255,.04);align-items:center;
+}
+.bt-tr:last-child{border-bottom:none}
+.bt-tr.hdr{color:var(--text3);font-weight:700;border-bottom:1px solid var(--border) !important}
+.bt-tr.win-row{background:rgba(0,255,136,.03)}
+.bt-tr.loss-row{background:rgba(255,68,102,.03)}
+.bt-pct.up{color:var(--green);font-weight:700}.bt-pct.dn{color:var(--red);font-weight:700}
+.bt-open{font-size:8px;background:rgba(255,170,0,.15);color:var(--yellow);
+  border:1px solid rgba(255,170,0,.3);border-radius:3px;padding:1px 4px}
+#bt-empty{padding:18px;text-align:center;font-size:10px;color:var(--text3)}
+
 /* ─── AI Chat ────────────────────────────────── */
 #chat-msgs{
   max-height:240px;overflow-y:auto;padding:8px 11px;
@@ -714,9 +753,29 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--font);font-si
           <button class="tf-btn" data-tf="6mo">6M</button>
           <button class="tf-btn" data-tf="1y">1Y</button>
           <button class="tog-btn" id="bb-toggle" onclick="toggleBB()">⬡ BB Bands</button>
+          <button class="tog-btn" id="bt-btn" onclick="toggleBacktest()">🔬 Backtest</button>
         </div>
       </div>
       <div id="chart-wrap"><canvas id="priceChart"></canvas></div>
+    </div>
+
+    <!-- Backtest Panel -->
+    <div class="card" id="backtest-panel">
+      <div class="card-hdr">
+        <span class="card-title">🔬 Backtest — <span id="bt-sym">—</span></span>
+        <div style="display:flex;gap:5px;align-items:center">
+          <select class="bt-select" id="bt-period" onchange="runBacktest()">
+            <option value="6mo">6 months</option>
+            <option value="1y" selected>1 year</option>
+            <option value="2y">2 years</option>
+          </select>
+          <button class="tog-btn" onclick="closeBacktest()" style="padding:2px 7px">✕</button>
+        </div>
+      </div>
+      <div id="bt-empty"><span class="spin"></span> Running simulation…</div>
+      <div id="bt-metrics" style="display:none"></div>
+      <div id="bt-chart-wrap" style="display:none"><canvas id="bt-chart"></canvas></div>
+      <div id="bt-trades" style="display:none"></div>
     </div>
 
     <!-- Pattern Recognition strip -->
@@ -1074,6 +1133,7 @@ async function selectStock(sym) {
   renderPatterns(analysis?.patterns || []);
   renderKelly(analysis);
   updateStatus(data);
+  if (S.btOpen) runBacktest();
 }
 
 // ───────────────────────────────────────────────────────────
@@ -1455,6 +1515,150 @@ function renderAllocation(stocks) {
 // ───────────────────────────────────────────────────────────
 //  News Feed
 // ───────────────────────────────────────────────────────────
+// ─── Backtesting ──────────────────────────────────────────────────────────
+S.btChart   = null;
+S.btOpen    = false;
+S.btPeriod  = '1y';
+
+function toggleBacktest() {
+  const panel = document.getElementById('backtest-panel');
+  if (!panel) return;
+  S.btOpen = !S.btOpen;
+  panel.style.display = S.btOpen ? '' : 'none';
+  const btn = document.getElementById('bt-btn');
+  if (btn) btn.classList.toggle('active', S.btOpen);
+  if (S.btOpen) runBacktest();
+}
+
+function closeBacktest() {
+  S.btOpen = false;
+  const panel = document.getElementById('backtest-panel');
+  if (panel) panel.style.display = 'none';
+  const btn = document.getElementById('bt-btn');
+  if (btn) btn.classList.remove('active');
+}
+
+async function runBacktest() {
+  if (!S.symbol || !S.btOpen) return;
+  const period = document.getElementById('bt-period')?.value || '1y';
+  S.btPeriod   = period;
+  const symEl  = document.getElementById('bt-sym');
+  if (symEl) symEl.textContent = S.symbol;
+
+  // Reset to loading state
+  ['bt-metrics','bt-chart-wrap','bt-trades'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+  const empty = document.getElementById('bt-empty');
+  if (empty) { empty.style.display = ''; empty.innerHTML = '<span class="spin"></span> Running simulation…'; }
+
+  const data = await api(`/api/backtest/${S.symbol}?period=${period}`);
+  if (!data || data.error) {
+    if (empty) empty.innerHTML = `<span style="color:var(--red)">Error: ${data?.error || 'Failed'}</span>`;
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  renderBacktestMetrics(data.metrics);
+  renderBacktestChart(data.equity);
+  renderBacktestTrades(data.trades);
+}
+
+function renderBacktestMetrics(m) {
+  const el = document.getElementById('bt-metrics');
+  if (!el) return;
+  const stats = [
+    { val: `${m.strat_return >= 0 ? '+' : ''}${m.strat_return}%`, lbl: 'Strategy Return',
+      cls: m.strat_return >= 0 ? 'up' : 'dn' },
+    { val: `${m.bnh_return >= 0 ? '+' : ''}${m.bnh_return}%`,    lbl: 'Buy & Hold',
+      cls: m.bnh_return >= 0 ? 'up' : 'dn' },
+    { val: `${m.alpha >= 0 ? '+' : ''}${m.alpha}%`,              lbl: 'Alpha',
+      cls: m.alpha >= 0 ? 'up' : 'dn' },
+    { val: `${m.win_rate}%`,       lbl: 'Win Rate',   cls: m.win_rate >= 50 ? 'up' : 'dn' },
+    { val: `${m.avg_trade_pct >= 0 ? '+' : ''}${m.avg_trade_pct}%`, lbl: 'Avg Trade',
+      cls: m.avg_trade_pct >= 0 ? 'up' : 'dn' },
+    { val: `-${m.max_drawdown}%`,  lbl: 'Max DD',     cls: m.max_drawdown > 15 ? 'dn' : 'neu' },
+    { val: m.n_trades,             lbl: 'Trades',     cls: 'neu' },
+    { val: `$${m.final_value.toLocaleString('en',{maximumFractionDigits:0})}`, lbl: 'Final ($10k)',
+      cls: m.final_value >= 10000 ? 'up' : 'dn' },
+  ];
+  el.innerHTML = stats.map(s =>
+    `<div class="bt-stat">
+       <div class="bt-stat-val ${s.cls}">${s.val}</div>
+       <div class="bt-stat-lbl">${s.lbl}</div>
+     </div>`
+  ).join('');
+  el.style.display = 'flex';
+}
+
+function renderBacktestChart(equity) {
+  const wrap = document.getElementById('bt-chart-wrap');
+  const canvas = document.getElementById('bt-chart');
+  if (!wrap || !canvas || !equity?.length) return;
+
+  if (S.btChart) { S.btChart.destroy(); S.btChart = null; }
+
+  const labels   = equity.map(e => e.d);
+  const stratVals = equity.map(e => e.v);
+  const bnhVals   = equity.map(e => e.bnh);
+
+  S.btChart = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Strategy', data: stratVals,
+          borderColor: '#00ff88', borderWidth: 1.5, pointRadius: 0,
+          fill: false, tension: 0.1 },
+        { label: 'Buy & Hold', data: bnhVals,
+          borderColor: '#4488ff', borderWidth: 1.5, pointRadius: 0,
+          borderDash: [4,3], fill: false, tension: 0.1 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: {
+        legend: { display: true, position: 'top',
+          labels: { color: '#8899aa', boxWidth: 12, font: { size: 9 } } },
+        tooltip: { mode: 'index', intersect: false,
+          callbacks: { label: ctx => ` ${ctx.dataset.label}: $${ctx.parsed.y.toFixed(0)}` } }
+      },
+      scales: {
+        x: { ticks: { color: '#556677', maxTicksLimit: 6, font: {size:8} },
+             grid:  { color: 'rgba(255,255,255,.04)' } },
+        y: { ticks: { color: '#556677', font: {size:8},
+                      callback: v => '$' + v.toLocaleString('en',{maximumFractionDigits:0}) },
+             grid:  { color: 'rgba(255,255,255,.04)' } }
+      }
+    }
+  });
+  wrap.style.display = '';
+}
+
+function renderBacktestTrades(trades) {
+  const el = document.getElementById('bt-trades');
+  if (!el) return;
+  if (!trades?.length) { el.style.display = 'none'; return; }
+  const rows = trades.slice().reverse().map(t => {
+    const cls   = t.win ? 'win-row' : 'loss-row';
+    const pCls  = t.pct >= 0 ? 'up' : 'dn';
+    const openB = t.open ? '<span class="bt-open">OPEN</span>' : '';
+    return `<div class="bt-tr ${cls}">
+      <span>${t.entry_dt}</span>
+      <span>${t.exit_dt}</span>
+      <span>$${t.entry}</span>
+      <span>$${t.exit}</span>
+      <span class="bt-pct ${pCls}">${t.pct >= 0 ? '+' : ''}${t.pct}%</span>
+      <span>${openB}</span>
+    </div>`;
+  }).join('');
+  el.innerHTML = `<div class="bt-tr hdr">
+    <span>Entry</span><span>Exit</span><span>Buy @</span>
+    <span>Sell @</span><span>Return</span><span></span>
+  </div>${rows}`;
+  el.style.display = '';
+}
+
 // ─── AI Chat ──────────────────────────────────────────────────────────────
 S.chatHistory = [];
 
